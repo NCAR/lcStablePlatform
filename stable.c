@@ -2,14 +2,46 @@
 #include <STDIO.H>
 //#include <STRING.H>
 
-#define MAX_IM     0x3F0
-#define SPI_OK 0 // transfer ended No Errors
-#define SPI_BUSY 1 // transfer busy
-#define SPI_ERROR 2 // SPI error
+#define MAX_IM      0x3F0
+#define SPI_OK      0 // transfer ended No Errors
+#define SPI_BUSY    1 // transfer busy
+#define SPI_ERROR   2 // SPI error
 #define PITCH_LABEL 0xD4
-#define ROLL_LABEL 0xD5
-#define SSM 0x60000000
-static char    Buf[100]; // A2D data buffer
+#define ROLL_LABEL  0xD5
+#define SSM         0x60000000
+
+#define TOP 1
+#define BOTTOM 0
+#define PLATFORM  TOP   // Set to TOP or BOTTOM to select appropriate coeffs
+
+#if (PLATFORM == BOTTOM) // Update 6/19/2018
+#define PITCH_POLARITY  1.0   // Set pitch equation polarity (+1.0) for bottom platform, float
+#define PITCH_GAIN      370.0 // Gain of pitch compensation, float
+#define PITCH_OFFSET    7000  // Pitch compensartion offset, int
+#define PITCH_MAXLIM    8850  // Maximum Servo PWM for pitch motor, int, ~PITCH_OFFSET+5*PITCH_GAIN
+#define PITCH_MINLIM    5150  // Minimum Servo PWM for pitch motor, int, ~PITCH_OFFSET-5*PITCH_GAIN
+#define ROLL_POLARITY   1.0   // Set roll equation polarity (+1) for bottom platform, float
+#define ROLL_GAIN       120.0 // Gain of roll compensation, float
+#define ROLL_OFFSET     6920  // Roll compensartion offset, int
+#define ROLL_MAXLIM     8360  // Maximum Servo PWM for roll motor, int, ~ROLL_OFFSET+12*ROLL_GAIN
+#define ROLL_MINLIM     5480  // Minimum Servo PWM for roll motor, int, ~ROLL_OFFSET-12*ROLL_GAIN
+
+#elif (PLATFORM == TOP) // Updated 6/19/2018
+#define PITCH_POLARITY  -1.0  // Set pitch equation polarity (-1.0) for top platform, float
+#define PITCH_GAIN      308.0 // Gain of pitch compensation, float
+#define PITCH_OFFSET    7000  // Pitch compensartion offset, int
+#define PITCH_MAXLIM    8540  // Maximum Servo PWM for pitch motor, int, ~PITCH_OFFSET+5*PITCH_GAIN
+#define PITCH_MINLIM    5460  // Minimum Servo PWM for pitch motor, int, ~PITCH_OFFSET-5*PITCH_GAIN
+#define ROLL_POLARITY   1.0   // Set roll equation polarity (+1) for top platform, float
+#define ROLL_GAIN       173.0 // Gain of roll compensation, float
+#define ROLL_OFFSET     6670  // Roll compensartion offset, int
+#define ROLL_MAXLIM     8746  // Maximum Servo PWM for roll motor, int, ~ROLL_OFFSET+12*ROLL_GAIN
+#define ROLL_MINLIM     4594  // Minimum Servo PWM for roll motor, int, ~ROLL_OFFSET-12*ROLL_GAIN
+
+#else
+#endif
+
+static char Buf[100]; // A2D data buffer
 
 long  data;
 unsigned char  f_10ms, f_500us, f_50ms, f_100ms;
@@ -42,7 +74,7 @@ __irq void T1_Isr(void);
   IO0CLR =  0x00080751;  //Clear all outputs.
 //  while(1) {
 //		IO0SET = 0x00080000;		 //toggle debug 
-//        IO0CLR = 0x00080000;
+//    IO0CLR = 0x00080000;
 //  }
   PWMMR4 = 7500;  
   PWMMR6 = 7500;  
@@ -50,8 +82,8 @@ __irq void T1_Isr(void);
   f_10ms = 0;
   f_50ms = 0;
   f_100ms = 0;
-  pitch = 4600;  //6900, 9200
-  roll = 4600;  
+  pitch = PITCH_OFFSET;
+  roll = ROLL_OFFSET;  
    
   PWM_Init(); // PWM Timer Initialization
   Uart0_Init();
@@ -62,7 +94,7 @@ __irq void T1_Isr(void);
   while (1) // Loop forever
   {
 		IO0SET = 0x00080000;		 //toggle debug
-        IO0CLR = 0x00080000;
+    IO0CLR = 0x00080000;
 /*
     ovcr1 = read_adc(1);  
     ovcr2 = read_adc(4);
@@ -114,32 +146,30 @@ __irq void T1_Isr(void);
         attitude = (float)((data<<3>>13)) * .0006866455078125;
         switch (data & 0xFF) {
         case PITCH_LABEL:
-          pitch_attitude = attitude;
+          pitch_attitude = PITCH_POLARITY * attitude;
           if((data & SSM) != SSM) break;
-          //pitch_attitude = -pitch_attitude;  //use for top side up on Aircraft
           if (pitch_attitude >= 0.0) {
-            pitch =  (short)((pitch_attitude/10.0) * 3700.) + 7000;	  //top m=3700 b=8000
-            if (pitch > 12500) pitch = 12500;						  //top=12500
+            pitch =  (short)(pitch_attitude * PITCH_GAIN + PITCH_OFFSET);
+            if (pitch > PITCH_MAXLIM) pitch = PITCH_MAXLIM;
           } 
           else {
-            pitch =(7000 + (short)((pitch_attitude/10.0) * 3700.));	  //top m=3700 b=8000
-            if (pitch < 4900) pitch = 4900;							  //top=4900
+            pitch =  (short)(pitch_attitude * PITCH_GAIN + PITCH_OFFSET);
+            if (pitch < PITCH_MINLIM) pitch = PITCH_MINLIM;
           }
           PWMMR4 = pitch;
           PWMLER = 0x7F; // enable PWM0 - PWM6 match latch (reload)
       	  IO0SET = 0x00080000;		 //toggle debug
           IO0CLR = 0x00080000;
         case ROLL_LABEL:
-          roll_attitude = attitude;
+          roll_attitude = ROLL_POLARITY * attitude;
           if((data & SSM) != SSM) break;
-
           if (roll_attitude >= 0.0) {
-            roll =  (short)((roll_attitude/10.0) * 1200) + 6920;  //top m=2300 b=6670, bottom m=1200 b=6920
-            if (roll > 9100) roll = 9100;							//top=9100
+            roll =  (short)(roll_attitude * ROLL_GAIN + ROLL_OFFSET);
+            if (roll > ROLL_MAXLIM) roll = ROLL_MAXLIM;
           }
           else {
-            roll =  (6920 + (short)((roll_attitude/10.0) * 1200)); //top m=1710 b=6800
-            if (roll < 4900) roll = 4900;							 //top=4900
+            roll =  (short)(roll_attitude * ROLL_GAIN + ROLL_OFFSET);
+            if (roll < ROLL_MINLIM) roll = ROLL_MINLIM;
           }
           PWMMR6 = roll;
           PWMLER = 0x7F; // enable PWM0 - PWM6 match latch (reload)
