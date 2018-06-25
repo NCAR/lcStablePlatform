@@ -12,7 +12,7 @@
 
 #define TOP 1
 #define BOTTOM 0
-#define PLATFORM  TOP   // Set to TOP or BOTTOM to select appropriate coeffs
+#define PLATFORM  BOTTOM   // Set to TOP or BOTTOM to select appropriate coeffs
 
 #if (PLATFORM == BOTTOM) // Update 6/19/2018
 #define PITCH_POLARITY  1.0   // Set pitch equation polarity (+1.0) for bottom platform, float
@@ -44,13 +44,15 @@
 static char Buf[100]; // A2D data buffer
 
 long  data;
-unsigned char  f_10ms, f_500us, f_50ms, f_100ms;
+unsigned char  f_10ms, f_500us, f_50ms;
+unsigned int   f_1000ms;
 const    char  ascii[] = "0123456789ABCDEF";
 short motor1_pos, motor2_pos, pitch, roll, ovcr1, ovcr2;
 float attitude;
 float pitch_attitude;
 float roll_attitude;
 unsigned short data1, data2, data3, data4;
+unsigned int i;
 
 void Uart0_Init(void);
 void ADC_Init(void);
@@ -81,7 +83,7 @@ __irq void T1_Isr(void);
   f_500us = 0;
   f_10ms = 0;
   f_50ms = 0;
-  f_100ms = 0;
+  f_1000ms = 0;
   pitch = PITCH_OFFSET;
   roll = ROLL_OFFSET;  
    
@@ -95,21 +97,21 @@ __irq void T1_Isr(void);
   {
 		IO0SET = 0x00080000;		 //toggle debug
     IO0CLR = 0x00080000;
-/*
-    ovcr1 = read_adc(1);  
-    ovcr2 = read_adc(4);
-    motor1_pos = read_adc(2);
-    motor2_pos = read_adc(8);
 
-		if ( ovcr1 > MAX_IM) {   // Check motor overcurrent
-		  VICIntEnClr = 0xFFFFFFFF;    //disable all interrupts
-      PWMMR4 = 0;
-      PWMMR6 = 0;
-      PWMLER = 0x7F; // enable PWM4-PWM6 match latch (reload
-      PrintString("\r\nMotor Current Overload\r\n");
-      while (1); // wait for a RESET
-		}
-*/
+    //ovcr1 = read_adc(1);  
+    //ovcr2 = read_adc(4);
+    motor2_pos = read_adc(8);
+    motor1_pos = read_adc(2);
+
+		//if ( ovcr1 > MAX_IM) {   // Check motor overcurrent
+		//  VICIntEnClr = 0xFFFFFFFF;    //disable all interrupts
+    //  PWMMR4 = 0;
+    //  PWMMR6 = 0;
+    //  PWMLER = 0x7F; // enable PWM4-PWM6 match latch (reload
+    //  PrintString("\r\nMotor Current Overload\r\n");
+    //  while (1); // wait for a RESET
+		//}
+
    if (f_500us == 1) {		 //T1 isr every 500_u
 	   f_500us = 0;
      
@@ -182,7 +184,7 @@ __irq void T1_Isr(void);
 
       f_10ms += 1;
       f_50ms += 1;																				 
-      f_100ms += 1;
+      f_1000ms += 1;
     }
 
     if (f_10ms == 20) {       // every 10 mseconds (100Hz)
@@ -193,13 +195,15 @@ __irq void T1_Isr(void);
 	    f_50ms = 0;      
     }
 
-    if (f_100ms == 200) {				// 100 mseconds
-      f_100ms = 0;
+    if (f_1000ms == 2000) {				// 1000 mseconds
+      f_1000ms = 0;
       roll = -roll;
-      sprintf(Buf,"PITCH %08x %f %i\r\n", data, pitch_attitude, pitch);
+//      sprintf(Buf,"0x%08x P:%.3f,%i R:%.3f,%i\r\n", data, pitch_attitude, pitch, roll_attitude, roll);
+//      PrintString(Buf);
+      sprintf(Buf,"M1:0x%08x, M2:0x%08x\r\n", motor1_pos, motor2_pos);
       PrintString(Buf);
-      sprintf(Buf,"ROLL  %08x %f %i\r\n", data, roll_attitude, roll);
-      PrintString(Buf);
+//      sprintf(Buf,"ROLL  %08x %f %i\r\n", data, roll_attitude, roll);
+//      PrintString(Buf);
 //    sprintf(Buf,"%08x\r\n",data);
 //    PrintString(Buf);
 /*
@@ -227,13 +231,13 @@ void T1_Init(void)
 
 void ADC_Init(void)
 {
-  ADCR  = 0x00200F00; // initialise internal ADC, select AIN 0-3 F=clkdiv
+  ADCR  = 0x00200F00; // initialise ADC: ADC operational, no burst, select AIN 0-3 F=clkdiv
 }
 unsigned short read_adc(unsigned char channel)
 {
-  ADCR &= 0xFFFFFFF0;
-  ADCR |=  channel;
-  ADCR |= 0x01000000; // start conversion now 
+  ADCR &= 0x00FFFFF0;                // Clear any previous conversion and channel
+  ADCR |=  channel;                  // Set the channel
+  ADCR |= 0x01000000;                // start conversion
   while((ADDR & 0x80000000) == 0);   //wait for conversion done
   return (ADDR & 0x0000FFFF) >> 6;
 }
