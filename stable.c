@@ -4,12 +4,13 @@
 #include <STRING.H>
 #include <MATH.H>
 
-#define FW_REV 20190215
+#define FW_REV 20190216
+//#define DEBUG  // Uncomment to add in debug functionality
 
 /* Platform Selection */
 #define TOP 0
 #define BOTTOM 1
-#define PLATFORM  TOP   // MUST SET: TOP or BOTTOM to select appropriate coeffs
+#define PLATFORM  BOTTOM   // MUST SET: TOP or BOTTOM to select appropriate coeffs
 
 /* Platform Coefficients */
 #if (PLATFORM == BOTTOM) // Updated 1/22/2019
@@ -81,13 +82,13 @@
                                  //   This value must be 0x300 or below (corresponding to 2.48V) due to sense diode drop
                                  //   Empirical observation shows this value less than 0x200, (1.64V, I_motor~150mA)
 
-/* Input Limits */
+/* Input Attitude Limits */
 #define PITCH_IN_MIN   PITCH_IN_BASE_MIN - PITCH_BI_TRANSLATION
 #define PITCH_IN_MAX   PITCH_IN_BASE_MAX - PITCH_BI_TRANSLATION
 #define ROLL_IN_MIN    ROLL_IN_BASE_MIN  - ROLL_BI_TRANSLATION
 #define ROLL_IN_MAX    ROLL_IN_BASE_MAX  - ROLL_BI_TRANSLATION
 
-/* Operational Modes */
+/* Operational Modes Options */
 #define INPUT_MODE_ARINC     0  // Input Data Modes
 #define INPUT_MODE_MANUAL    1
 #define INPUT_MODE_CAL       2
@@ -130,6 +131,8 @@
 #define COEFF_SAVE_SECTOR 0x0E 
 #define COEFF_SAVE_ADDR   0x00038200 // 256kB Part, Sector 14: 0x00038000 - 0x00039FFF
 
+
+// coeff_set_t, structure of control loop coefficients
 typedef struct coeff_set_struct
 {
     float pitch_bi_translation;
@@ -154,6 +157,7 @@ typedef struct coeff_set_struct
     float roll_in_max;
 } coeff_set_t;
 
+/* Function Prototypes */
 void execute_control_loop_iteration(void);
 void read_arinc_update_loop_input(void);
 void test_pattern_update_loop_input(void);
@@ -171,40 +175,43 @@ void ADC_Init(void);
 void T1_Init(void);
 void PWM_Init(void);
 void SPI_Init(void);
-void PrintByte(unsigned char b);
+static void ua_outchar(char c);
 void PrintString(const char *s);
-//int atoi(char * str);
 static void process_inchar(void);
 static void process_command(void);
-static void ua_outchar(char c);
 unsigned short read_adc(unsigned char);
 int save_coefficients(coeff_set_t * p_coeff_set);
 int load_coefficients(coeff_set_t * p_coeff_set);
 void read_coefficients(void);
 void update_coefficient(coeff_set_t * coeff_set, unsigned int coeff_index, float value);
 __irq void T1_Isr(void);
-__irq void UART_RX_Isr(void);
 
+/* Global Variables */
 static char Buf[100];                  // A2D data buffer
 static char cmd_buf[COMMAND_BUF_MAX] = {0,0,0,0,0,0,0,0,0,0}; // UART Receive command buffer
 static int  cmd_buf_inext = 0;         // Next available cmd_buf index
 static short command_status = COMMAND_STATUS_NOT_COMPLETE;
+static char cmd_delim[] = ",";
+
 
 long  data;
-unsigned char  f_10ms, f_500us, f_50ms;
+unsigned short data1, data2, data3, data4;
+unsigned int i;
+unsigned char  f_500us;
 unsigned int   f_1000ms;
 const    char  ascii[] = "0123456789ABCDEF";
 short pitch_ovcr;
 short roll_ovcr;
-
 float attitude;
 
-static short input_data_mode = INPUT_MODE_ARINC;
+// Operational Modes (Global)
+static short input_data_mode  = INPUT_MODE_ARINC;
 static short output_data_mode = OUTPUT_MODE_STREAM;
-static short loop_mode = LOOP_MODE_CLOSED;
-static short reference_mode = REFERENCE_MODE_INS;
-static short write_prom_mode = WRITE_PROM_MODE_DISABLED;
+static short loop_mode        = LOOP_MODE_CLOSED;
+static short reference_mode   = REFERENCE_MODE_INS;
+static short write_prom_mode  = WRITE_PROM_MODE_DISABLED;
 
+// Test Pattern position sequence  (Global)
 // Note: test pattern pitch and roll angles do not include mounting corrections
 //   test pattern is meant to exercise the platform relative to its base
 const float tp_pitch_angles[5] = {0.0,1.0,2.0,-2.0,-1.0};
@@ -213,7 +220,7 @@ unsigned short tp_pitch_index = 0;
 unsigned short tp_roll_index  = 0;
 unsigned int tp_counter = 0;
 
-// Calibration sequence positions
+// Calibration sequence positions  (Global)
 //   Test 5 position, approach from both sides, cross (t) or Criss-cross (x) pattern
 //   Even indexes are approach position, odd are measurement positions
 //   pitch angles are offset to correspond to true leveling relative to ground
@@ -221,17 +228,16 @@ const float cal_roll_angles_t[CAL_SEQ_LEN]  = {0.0,0.0,0.0,0.0, 0.0,0.0,0.0,0.0,
                                              -7.0,-6.0,-5.0,-6.0, -1.0,0.0,1.0,0.0, 5.0,6.0,7.0,6.0};
 const float cal_pitch_angles_t[CAL_SEQ_LEN] = {-4.0,-3.0,-2.0,-3.0, -1.0,0.0, 1.0,0.0, 2.0,3.0,4.0,3.0, 
                                               0.0,0.0,0.0,0.0, 0.0,0.0,0.0,0.0, 0.0,0.0,0.0,0.0};
-
 const float cal_roll_angles_x[CAL_SEQ_LEN]  = {-7.0,-6.0,-5.0,-6.0, -1.0,0.0,1.0,0.0, 5.0,6.0,7.0,6.0,
                                                -7.0,-6.0,-5.0,-6.0, -1.0,0.0,1.0,0.0, 5.0,6.0,7.0,6.0};
 const float cal_pitch_angles_x[CAL_SEQ_LEN] = {-4.0,-3.0,-2.0,-3.0, -1.0,0.0, 1.0,0.0, 2.0,3.0,4.0,3.0, 
                                                -2.0,-3.0,-4.0,-3.0,  1.0,0.0,-1.0,0.0, 4.0,3.0,2.0,3.0};
-
 int   cal_sequence_counter = 0; // Counter to adjust time between positions
 short cal_sequence_index = 0;   // Advances the position of the cal sequence
 
-coeff_set_t g_coeff_set;
+coeff_set_t g_coeff_set; // Working control loop coefficient set (Global)
 
+/* Control loop state variables (Global) */
 float pitch_attitude;
 float pitch_base;
 float pitch_loopInput;
@@ -260,12 +266,21 @@ float roll_posFilter;
 unsigned short roll_decCntr;
 float roll_loopFB;
 
-unsigned short data1, data2, data3, data4;
-unsigned int i;
-
+/* In-Application Programming (IAP) Entry Function */
 typedef void (*IAP)(unsigned long [],unsigned long []);
 IAP IAP_entry = (IAP) IAP_LOCATION;
 
+/* ------------------------------------------------------------
+   main()
+   - Accept attitude position inputs and adjust motor PWM controls accordingly to correct
+   - Calculation of motor control loop state parameters
+   - Serial Interface for configuration and data output
+   - Manage control loop coefficients, working and in memory
+   - ADC monitoring of motor encoder voltage outputs and motor over-current conditions
+   - Timer Interrupts trigger periodic functions
+   - Loop forever
+   -------------------------------------------------------------- 
+*/
 int main (void)
 {
     int rtn = 0;
@@ -317,7 +332,6 @@ int main (void)
         }
     }
   
-
     while (1) // Loop forever
     {
         process_inchar();
@@ -331,13 +345,11 @@ int main (void)
 
         pitch_encoder = read_adc(8);
         pitch_ovcr = read_adc(4);
-
         roll_encoder  = read_adc(2);
         roll_ovcr = read_adc(1);  
-        
         check_motor_overcurrent();
 
-        if (f_500us == 1) //T1 isr every 500_u 
+        if (f_500us == 1) //T1 isr every 500us 
         {		 
             // Update input to control Loop base on mode
             if (INPUT_MODE_ARINC == input_data_mode)
@@ -357,28 +369,16 @@ int main (void)
                 calibration_update_loop_input();
             }
             else 
-            {}
+            {} // DO NOTHING
 
             // Update Control Loop
             execute_control_loop_iteration();
 
             // Increment Time Counters
             f_500us = 0;
-            f_10ms += 1;
-            f_50ms += 1;																				 
             f_1000ms += 1;
         }
-
-        if (f_10ms == 20)         // every 10 mseconds (100Hz)
-        {
-          f_10ms = 0;
-        }
-
-        if (f_50ms == 100)        // 20 Hz TE cooler control
-        {
-            f_50ms = 0;      
-        }
-
+        
         if (f_1000ms == 2000)      // 1000 mseconds
         {
             send_output_data();
@@ -388,7 +388,15 @@ int main (void)
 
     return 0; // Never reached
 }    
+// end main() ------------------------------------------------------------
 
+/* ------------------------------------------------------------
+   read_arinc_update_loop_input()
+   - Read in ARINC attitude data from the HI-3588 SPI Interface
+   - Extract pitch or roll value from ARINC word
+   - Apply limits to attitude values 
+   -------------------------------------------------------------- 
+*/
 void read_arinc_update_loop_input(void)
 {
     while ((IO0PIN & 0x02000000) == 0) //FIFO not empty, rflag P0.25
@@ -450,7 +458,14 @@ void read_arinc_update_loop_input(void)
     } 
     return;
 }
+// end read_arinc_update_loop_input() ------------------------------------------------------------
 
+/* ------------------------------------------------------------
+   test_pattern_update_loop_input()
+   - Update Test Pattern input attitude values periodically
+   - Cycle through pitch positions for each roll position 
+   -------------------------------------------------------------- 
+*/
 void test_pattern_update_loop_input(void)
 {
     tp_counter = (tp_counter + 1) % (2000 * CAL_SEQ_INTERVAL); // 1 sec = 2000 counts (0.5ms step)
@@ -472,7 +487,13 @@ void test_pattern_update_loop_input(void)
 
     return;
 }
+// end test_pattern_update_loop_input() ------------------------------------------------------------
 
+/* ------------------------------------------------------------
+   calibration_update_loop_input()
+   - Update Calibration input attitude values
+   -------------------------------------------------------------- 
+*/
 void calibration_update_loop_input(void)
 {
     cal_sequence_counter++;
@@ -506,7 +527,19 @@ void calibration_update_loop_input(void)
         PrintString("!CAL DONE, now IMM\r\n");
     }
 }
+// end calibration_update_loop_input() ------------------------------------------------------------
 
+/* ------------------------------------------------------------
+   execute_control_loop_iteration()
+   - Calculate control loop state parameters and update motor PWM values
+   - Calculations different for closed-loop mode or open-loop mode
+   - Closed-loop is 1st order loop with gain compensation
+     - LOOP_TC Dominant pole
+     - Secondary pole is motor response time
+   - PWM setting is coarsely quantized to prevent limit cycles  
+   - Motor Encoder values averaged over FB_AVE samples
+   -------------------------------------------------------------- 
+*/
 void execute_control_loop_iteration(void)
 {
     pitch_base = PITCH_POLARITY * (pitch_attitude + get_reference_frame_pitch_translation(reference_mode));
@@ -606,7 +639,14 @@ void execute_control_loop_iteration(void)
 
     return;
 }
+// end execute_control_loop_iteration() ------------------------------------------------------------
 
+/* ------------------------------------------------------------
+   send_output_data()
+   - Output the sample data on serial interface, comma delimited
+   - Different outputs for different output modes
+   -------------------------------------------------------------- 
+*/
 void send_output_data(void)
 {
     if (OUTPUT_MODE_STREAM == output_data_mode)
@@ -616,22 +656,16 @@ void send_output_data(void)
                     roll_attitude,  roll_pwm,  roll_encoder,  roll_loopFB,  roll_ovcr);
         PrintString(Buf);
 
-        // sprintf(Buf,"Pin:%.2f,Ppwm:%d,Penc:%d,Pfb:%.2f,Rin:%.2f,Rpwm:%d,Renc:%d,Rfb:%.2f\r\n",  
-        //             pitch_attitude, pitch_pwm, pitch_encoder, pitch_loopFB, roll_attitude, roll_pwm, roll_encoder, roll_loopFB); // 89-char
-        // PrintString(Buf);
+#ifdef DEBUG
+        sprintf(Buf,"Pin:%.2f,Ppwm:%d,Penc:%d,Pfb:%.2f,Rin:%.2f,Rpwm:%d,Renc:%d,Rfb:%.2f\r\n",  
+                    pitch_attitude, pitch_pwm, pitch_encoder, pitch_loopFB, roll_attitude, roll_pwm, roll_encoder, roll_loopFB); // 89-char
+        PrintString(Buf);
+        sprintf(Buf,"Err:%.3f,Erf:%.3f,Enc:%d,FB:%.2f\r\n", pitch_loopErrK, pitch_loopErrK_filt, pitch_encoder, pitch_loopFB);
+        PrintString(Buf);
+        sprintf(Buf,"Err:%.3f,Erf:%.3f,Enc:%d,FB:%.2f\r\n", roll_loopErrK, roll_loopErrK_filt, roll_encoder, roll_loopFB);
+        PrintString(Buf);
+#endif
 
-        // sprintf(Buf,"0x%08x P:%.3f,%i R:%.3f,%i\r\n", data, pitch_attitude, pitch_pwm, roll_attitude, roll_pwm);
-        // PrintString(Buf);
-        // sprintf(Buf,"Err:%.3f,Erf:%.3f,Enc:%d,FB:%.2f\r\n", pitch_loopErrK, pitch_loopErrK_filt, pitch_encoder, pitch_loopFB);
-        // PrintString(Buf);
-        // sprintf(Buf,"Err:%.3f,Erf:%.3f,Enc:%d,FB:%.2f\r\n", roll_loopErrK, roll_loopErrK_filt, roll_encoder, roll_loopFB);
-        // PrintString(Buf);
-        // sprintf(Buf,"P(M2):0x%08x, R(M1):0x%08x\r\n", pitch_encoder, roll_encoder);
-        // PrintString(Buf);
-        // sprintf(Buf,"ROLL  %08x %f %i\r\n", data, roll_attitude, roll);
-        // PrintString(Buf);
-        // sprintf(Buf,"%08x\r\n",data);
-        // PrintString(Buf);
     }
     else if (OUTPUT_MODE_EXAMPLE == output_data_mode)
     {
@@ -639,12 +673,19 @@ void send_output_data(void)
         PrintString(Buf);
     }
     else if (OUTPUT_MODE_SILENT == output_data_mode)
-    {}
+    {} // DO NOTHING
     else
-    {}
+    {} // DO NOTHING
     return;    
 }
+// end send_output_data() ------------------------------------------------------------
 
+/* ------------------------------------------------------------
+   get_reference_frame_pitch_translation()
+   - Get the pitch translation coefficient from the base reference frame to 
+     the active reference frame, depends on the reference mode
+   -------------------------------------------------------------- 
+*/
 float get_reference_frame_pitch_translation(short ref_mode)
 {
     float translation = 0.0;
@@ -662,7 +703,14 @@ float get_reference_frame_pitch_translation(short ref_mode)
     }
     return translation;
 }
+// end get_reference_frame_pitch_translation() ---------------------------------------
 
+/* ------------------------------------------------------------
+   get_reference_frame_roll_translation()
+   - Get the roll translation coefficient from the base reference frame to 
+     the active reference frame, depends on the reference mode
+   -------------------------------------------------------------- 
+*/
 float get_reference_frame_roll_translation(short ref_mode)
 {
     float translation = 0.0;
@@ -680,7 +728,12 @@ float get_reference_frame_roll_translation(short ref_mode)
     }
     return translation;
 }
+// end get_reference_frame_roll_translation() ---------------------------------------
 
+/* ------------------------------------------------------------
+   check_motor_overcurrent()
+   -------------------------------------------------------------- 
+*/
 void check_motor_overcurrent(void)
 {
     if ((roll_ovcr > MAX_IM) || (pitch_ovcr > MAX_IM)){   // Check motor overcurrent
@@ -693,182 +746,26 @@ void check_motor_overcurrent(void)
     }
     return;
 }
+// end check_motor_overcurrent() ---------------------------------------
 
+/* ------------------------------------------------------------
+   toggle_test_output()
+   -------------------------------------------------------------- 
+*/
 void toggle_test_output(void)
 {
     IO0SET = 0x00080000;		 //toggle debug
     IO0CLR = 0x00080000;
     return;
 }
+// end toggle_test_output() ---------------------------------------
 
-void init_system(void)
-{
-    VICIntEnClr = 0xFFFFFFFF; // disable all interrupts!
-    VPBDIV = 1;
-    PINSEL0 = 0x000A1505;
-    PINSEL1 = 0x15400000; 
-    IO1DIR =  0x0C000000;  
-    IO0DIR =  0x00080751;  //Set outputs
-    IO0CLR =  0x00080751;  //Clear all outputs.
-    PWMMR4 = 7500;
-    PWMMR6 = 7500;
-    f_500us = 0;
-    f_10ms = 0;
-    f_50ms = 0;
-    f_1000ms = 0;
-    attitude = 0.0;
-    pitch_attitude  = 0;
-    roll_attitude   = 0;
-    pitch_loopInput = 0;
-    roll_loopInput  = 0;
-    pitch_loopErrK  = 0;
-    roll_loopErrK   = 0;
-    pitch_loopErrK_d = 0;
-    roll_loopErrK_d  = 0;
-    pitch_loopErrK_filt = 0;
-    roll_loopErrK_filt  = 0;
-    pitch_loopErrK_filt_d = 0;
-    roll_loopErrK_filt_d  = 0;
-    pitch_pwm = PITCH_PWM_OFFSET;
-    roll_pwm  = ROLL_PWM_OFFSET; 
-    pitch_encoder = 0x180;  // Initialization offsets
-    roll_encoder =  0x162;	
-    pitch_attitudePos = PITCH_FB_OFFSET;
-    roll_attitudePos  = ROLL_FB_OFFSET;
-    pitch_posFilter = 0;
-    roll_posFilter = 0;
-    pitch_decCntr = 0;
-    roll_decCntr = 0;
-    pitch_loopFB = 0;
-    roll_loopFB  = 0;
-       
-    PWM_Init(); // PWM Timer Initialization
-    Uart0_Init();
-    ADC_Init(); // ADC Initialization (internal A/D)
-    T1_Init();  // 0.5 msec tick
-    SPI_Init(); // initialize SPI 
-    return;
-}
-
-void T1_Init(void)
-{
-    VICVectAddr2 = (unsigned int) &T1_Isr;
-    VICVectCntl2 = 0x25; //  enabled
-    VICIntEnable |= 0x20; // Channel#5 is the Timer 1
-    T1MR0 = 30000; // = 0.5 msec / 16,67 nsec
-    T1MCR = 3; // Interrupt on Match0, reset timer on match
-    // Pclk = 60 MHz, timer count = 16,67 nsec
-    T1TC  = 0; // reset Timer counter
-    T1TCR = 1; // enable Timer
-    return;
-}
-
-void ADC_Init(void)
-{
-    ADCR = 0x00200F00; // initialize ADC: ADC operational, no burst, select AIN 0-3 F=clkdiv
-    return;
-}
-
-unsigned short read_adc(unsigned char channel)
-{
-    ADCR &= 0x00FFFFF0;                // Clear any previous conversion and channel
-    ADCR |=  channel;                  // Set the channel
-    ADCR |= 0x01000000;                // start conversion
-    while((ADDR & 0x80000000) == 0);   //wait for conversion done
-    return (ADDR & 0x0000FFFF) >> 6;
-}
-
-void PWM_Init(void)                           
-{
-    PWMPR  = 12;         // prescaler to 60, timer runs at 60 MHz / 12 = 5 MHz
-    PWMPC  = 0;          // prescale counter to 0
-    PWMTC  = 0;          // reset timer to 0
-    PWMMR0 = 15000;      // -> PMW base frequency = 5 MHz / 15000 = 333.3 Hz (3ms)
-    PWMMR4 = pitch_pwm;  // Motor 1 pulse, 1 count is 0.1 deg
-    PWMMR6 = roll_pwm;   // Motor 2 pulse
-    PWMMCR = 0x00000002; // 
-    PWMPCR = 0x5000;     // enable PWM4 PWM6 outputs
-    PWMLER = 0x7F;       // enable PWM0 - PWM6 match latch (reload)
-    PWMTCR = 0x09;       // enable PWM mode and start timer
-    return;
-}
-
-void SPI_Init(void)
-{
-    unsigned char i;
-
-    S0SPCR   = 0x20;               /* 0010 1000     Initialize SPI hardware:
-                                    |||| ||||
-                                    |||| | -----> reserved
-                                    ||||  ------> SPI clock phase select
-                                    ||| --------> SPI clock polarity = low when idle
-                                    || ---------> SPI master mode
-                                    | ----------> SPI data order = msb first
-                                     -----------> SPI interrupt disabled        */
-    S0SPCCR = 60; // SCK = 1 MHz, cclk = 60 MHz, counter > 8 and even
-
-    IOCLR0 = 0x00000400;     // SSEL = 1, P0.10
-    S0SPDR = 0x01;           //ARINC Reset cmd.
-    while ((S0SPSR & 0x80) == 0); //busy
-    IOSET0 = 0x00000400;
-    IOCLR0 = 0x00000400;     // SSEL = 1, P0.10
-    S0SPDR = 0x10;           //ARINC control register write
-    while ((S0SPSR & 0x80) == 0); //busy
-    S0SPDR = 0x00;           //ARINC control register values 0x08
-    while ((S0SPSR & 0x80) == 0); //busy
-    S0SPDR = 0x24;           //ARINC control register values 0x26
-    while ((S0SPSR & 0x80) == 0); //busy
-    IOSET0 = 0x00000400;
-    //  IOCLR0 = 0x00000400;     // SSEL = 1, P0.10
-    //  S0SPDR = 0x0A;
-    //  while ((S0SPSR & 0x80) == 0);
-    //  status = S0SPDR;
-    //  IOSET0 = 0x00000400;
-
-    IOCLR0 = 0x00000400;     // SSEL = 1, P0.10
-    S0SPDR = 0x06;           //ARINC label set.
-    while ((S0SPSR & 0x80) == 0); //busy
-
-    for (i = 0; i < 5; i++)
-    {
-        S0SPDR = 0x00;         //ARINC labels not selected
-        while ((S0SPSR & 0x80) == 0); //busy
-    }
-    
-    S0SPDR = 0x30;           // ARINC pitch and roll lables selected WAS 0X30
-    while ((S0SPSR & 0x80) == 0); //busy
-
-    for (i=0 ; i<26; i++)
-    {
-        S0SPDR = 0x00;         //ARINC labels not selected
-        while ((S0SPSR & 0x80) == 0); //busy
-    }
-
-    IOSET0 = 0x00000400;
-    return;
-}
-
-void Uart0_Init(void)
-{
-    U0LCR = 0x83; // 8 bits, no Parity, 1 Stop bit
-    U0DLL = 0x21; // 115.2Kbaud for 60MHz PCLK Clock
-    U0DLM = 0x00;
-    U0FCR = 0x07; // FIFO Enabled
-    U0LCR = 0x03; // DLAB = 0
-    return;
-}
-
-static void ua_outchar(char c)
-{
-    U0THR = c;
-    while(!(U0LSR & 0x40));
-    return;
-}
-
-/* process_inchar()
-   Check for UART input characters and add them to the buffer
-   Characters only accumulated into command if start with '#'
-   Command finished (command_status set) when '\r' or '\n' received.
+/* ------------------------------------------------------------
+   process_inchar()
+   - Check for UART input characters and add them to the buffer
+   - Characters only accumulated into command if start with '#'
+   - Command finished (command_status set) when '\r' or '\n' received.
+   -------------------------------------------------------------- 
  */
 static void process_inchar(void)
 {
@@ -899,7 +796,6 @@ static void process_inchar(void)
             break;
 
             case ('#'):
-                PrintByte('#');
                 cmd_buf[0] = '#';
                 cmd_buf_inext = 1;
             break;
@@ -916,14 +812,14 @@ static void process_inchar(void)
     }
     return;
 }
-/* end process_inchar() */
+// end process_inchar() ---------------------------------------
 
-/* process_command()
-   When a command is complete, process the command string stored in cmd_buf
-   The command is a string (NULL terminated), so string functions used
+/* -------------------------------------------------------------- 
+   process_command()
+   - When a command is complete, process the command string stored in cmd_buf
+   - The command is a string (NULL terminated), so string functions used
+   -------------------------------------------------------------- 
  */
-static char cmd_delim[] = ",";
-
 static void process_command(void)
 {
     char * cmd_command = strtok(cmd_buf, cmd_delim);
@@ -1123,7 +1019,13 @@ static void process_command(void)
 }
 /* end process_command() */
 
-void send_const(void)
+/* -------------------------------------------------------------- 
+   send_const()
+   - Output constant variables on the serial interface
+   - includes firmware rev., platform name, static control loop params
+   -------------------------------------------------------------- 
+ */
+ void send_const(void)
 {
     sprintf(Buf,"!Firmware Revision: %d\r\n",FW_REV);  
     PrintString(Buf);
@@ -1156,109 +1058,56 @@ void send_const(void)
 
     return;
 }
+// end send_const() ---------------------------------------
 
-void send_coeffs(coeff_set_t * coeff_set)
+/* -------------------------------------------------------------- 
+   send_const()
+   param p_coeff_set: pointer to a coefficient set
+   - Output control loop configurable variables on the serial interface
+   -------------------------------------------------------------- 
+ */
+ void send_coeffs(coeff_set_t * p_coeff_set)
 {
-    sprintf(Buf,"!Pitch Translation: %f\r\n",coeff_set->pitch_bi_translation);
+    sprintf(Buf,"!Pitch Translation: %f\r\n",p_coeff_set->pitch_bi_translation);
     PrintString(Buf);
-    sprintf(Buf,"!Pitch PWM Min: %d\r\n",coeff_set->pitch_pwm_min);
+    sprintf(Buf,"!Pitch PWM Min: %d\r\n",p_coeff_set->pitch_pwm_min);
     PrintString(Buf);
-    sprintf(Buf,"!Pitch PWM Max: %d\r\n",coeff_set->pitch_pwm_max);
+    sprintf(Buf,"!Pitch PWM Max: %d\r\n",p_coeff_set->pitch_pwm_max);
     PrintString(Buf);
-    sprintf(Buf,"!Pitch PWM Gain: %f\r\n",coeff_set->pitch_pwm_gain);
+    sprintf(Buf,"!Pitch PWM Gain: %f\r\n",p_coeff_set->pitch_pwm_gain);
     PrintString(Buf);
-    sprintf(Buf,"!Pitch PWM Offset: %d\r\n",coeff_set->pitch_pwm_offset);
+    sprintf(Buf,"!Pitch PWM Offset: %d\r\n",p_coeff_set->pitch_pwm_offset);
     PrintString(Buf);
-    sprintf(Buf,"!Pitch FB Gain: %f\r\n",coeff_set->pitch_fb_gain);
+    sprintf(Buf,"!Pitch FB Gain: %f\r\n",p_coeff_set->pitch_fb_gain);
     PrintString(Buf);
-    sprintf(Buf,"!Pitch FB Offset: %f\r\n",coeff_set->pitch_fb_offset);
+    sprintf(Buf,"!Pitch FB Offset: %f\r\n",p_coeff_set->pitch_fb_offset);
     PrintString(Buf);
 
-    sprintf(Buf,"!Roll Translation: %f\r\n",coeff_set->roll_bi_translation);
+    sprintf(Buf,"!Roll Translation: %f\r\n",p_coeff_set->roll_bi_translation);
     PrintString(Buf);
-    sprintf(Buf,"!Roll PWM Min: %d\r\n",coeff_set->roll_pwm_min);
+    sprintf(Buf,"!Roll PWM Min: %d\r\n",p_coeff_set->roll_pwm_min);
     PrintString(Buf);
-    sprintf(Buf,"!Roll PWM Max: %d\r\n",coeff_set->roll_pwm_max);
+    sprintf(Buf,"!Roll PWM Max: %d\r\n",p_coeff_set->roll_pwm_max);
     PrintString(Buf);
-    sprintf(Buf,"!Roll PWM Gain: %f\r\n",coeff_set->roll_pwm_gain);
+    sprintf(Buf,"!Roll PWM Gain: %f\r\n",p_coeff_set->roll_pwm_gain);
     PrintString(Buf);
-    sprintf(Buf,"!Roll PWM Offset: %d\r\n",coeff_set->roll_pwm_offset);
+    sprintf(Buf,"!Roll PWM Offset: %d\r\n",p_coeff_set->roll_pwm_offset);
     PrintString(Buf);
-    sprintf(Buf,"!Roll FB Gain: %f\r\n",coeff_set->roll_fb_gain);
+    sprintf(Buf,"!Roll FB Gain: %f\r\n",p_coeff_set->roll_fb_gain);
     PrintString(Buf);
-    sprintf(Buf,"!Roll FB Offset: %f\r\n",coeff_set->roll_fb_offset);
+    sprintf(Buf,"!Roll FB Offset: %f\r\n",p_coeff_set->roll_fb_offset);
     PrintString(Buf);
     return;
 }
+// end send_coeffs() ---------------------------------------
 
-void PrintByte(unsigned char b)
-{
-    ua_outchar(b & 0x0f);
-    return;
-}
-
-void PrintString(const char *s)
-{
-    while(*s)
-    {
-        //    if(*s == '\n') ua_outchar('\r');
-        ua_outchar(*s);
-        s++;
-    }
-    return;
-}
-
-
-/* atoi()
-   Custom Implementation for basic signed integers
-
-int atoi(char * str)
-{
-    int len = strlen(str);
-    int value = 0;
-    int k;
-
-    if (0 == len)
-    {
-        return 0;
-    }
-
-    for (k=0; k < len; k++) //Check for floating point
-    {
-        if ((str[0] == '.') || (str[0] == ',')) return 0;
-    }
-    
-    if (str[0] != '-')
-    {
-        value += (str[0] - '0');
-    }
-
-    for (k=1; k < len; k++)
-    {
-        value = 10 * value;
-        value += (str[k] - '0');
-    }
-
-    if (str[0] == '-')
-    {
-        value = -1 * value;
-    }
-
-    return value;
-}
-*/
-
-
-__irq void T1_Isr(void)  // Timer 1 ISR every 0.5 msec
-{
-    f_500us = 1; // toggles every 0.5 mseconds
-
-    T1IR = 0x01; // reset interrupt flag
-    VICVectAddr = 0; // reset VIC
-    return;
-}
-
-void update_coefficient(coeff_set_t * p_coeff_set, unsigned int coeff_index, float value)
+/* -------------------------------------------------------------- 
+   update_coefficient()
+   - Update a coefficient of a set, given the coefficient index and desired value
+   - Changing _bi_translation also requires updating _in_min and _in_max
+   -------------------------------------------------------------- 
+ */
+ void update_coefficient(coeff_set_t * p_coeff_set, unsigned int coeff_index, float value)
 {
     switch (coeff_index)
     {
@@ -1326,27 +1175,31 @@ void update_coefficient(coeff_set_t * p_coeff_set, unsigned int coeff_index, flo
     }
     return;
 }
+// end update_coefficient() ---------------------------------------
 
-// In-Application-Programming [IAP]
-//
-// caller creates these as an auto variable, and populates the command array
-// the result will be in the result array
-// worst-case command size is 5, worst-case result is 2
-//
-// uint32_t IAP_command[5];
-// uint32_t IAP_result[2];
-//
-// IAP usage:  IAP_entry (IAP_command, IAP_result);
-//
-
-int save_coefficients(coeff_set_t * p_coeff_set)
+/* -------------------------------------------------------------- 
+   save_coefficients()
+   - Utilizes in-application programming (IAP) to update PROM memory
+   - See LP2129 User's Manual for details of IAP commands
+   - IAP PROM write must target a particular sector. For LP2129 (256kB size),
+       sector COEFF_SAVE_SECTOR is used to avoid program memory and boot sectors
+   - PROM blocks must be written in 512 Byte Blocks. Copy coeff set over to a
+       512Byte temp block to perform IAP memory write.
+   - Interrupts must be disabled during IAP access
+   - Lowest 32Bytes of RAM must be reserved for IAP functions. Project compiler
+       should be configured to start RAM at >0x40000020 to avoid lowest memory
+   - The sector should be erased before writing to avoid strange results when
+       making multiple successive IAP write commands
+   --------------------------------------------------------------
+ */
+ int save_coefficients(coeff_set_t * p_coeff_set)
 {
     volatile unsigned long VICIntEnable_state;
-    unsigned long command[5];
-    unsigned long result[2] = {1,1}; // Set to INVALID_COMMAND status
-    unsigned char mem_temp[512];  // Temporary RAM memory for writing to PROM with correct size
+    unsigned long command[5];        // Worst case command size is 5
+    unsigned long result[2] = {1,1}; // Set to INVALID_COMMAND status as default
+    unsigned char mem_temp[512];     // Temporary RAM memory for writing to PROM with correct size
 
-    /* Allocate temp mem of correct size and transfer to temp*/
+    /* Transfer coefficient set to temp 512Byte block */
     memcpy((void *) &(mem_temp[0]), (void *) p_coeff_set, sizeof(*p_coeff_set));
 
     /* Disable Interrupts */
@@ -1368,7 +1221,7 @@ int save_coefficients(coeff_set_t * p_coeff_set)
     command[0] = 52;                // Erase Sector command
     command[1] = COEFF_SAVE_SECTOR; // Start Sector Number
     command[2] = COEFF_SAVE_SECTOR; // End Sector Number
-    command[3] = 48000;             // System clock frequency in kHz, 48MHz (Assuming 12MHz XO and 4x PLL multiplier)
+    command[3] = 60000;             // System clock frequency in kHz, 60MHz (Assuming 12MHz XO and 5x PLL multiplier)
     IAP_entry(command, result);    
     if (result[0] != 0) {
         PrintString("!ERROR Erase Sector Failed\r\n");
@@ -1398,7 +1251,7 @@ int save_coefficients(coeff_set_t * p_coeff_set)
     command[1] = (unsigned long) COEFF_SAVE_ADDR; // Destimation Flash Address
     command[2] = (unsigned long) &(mem_temp[0]);  // Source RAM Address
     command[3] = sizeof(mem_temp);                // Number of Bytes to write
-    command[4] = 48000;                           // System clock frequency in kHz, 48MHz (Assuming 12MHz XO and 4x PLL multiplier)
+    command[4] = 60000;                           // System clock frequency in kHz, 60MHz (Assuming 12MHz XO and 5x PLL multiplier)
     IAP_entry(command, result);    
     if (result[0] != 0) {
         PrintString("!ERROR Write Mem Failed\r\n");
@@ -1409,8 +1262,16 @@ int save_coefficients(coeff_set_t * p_coeff_set)
         
     return result[0];  // return the IAP write result, should be =0 for CMD_SUCCESS
 }
+// end save_coefficients() ---------------------------------------
 
-int load_coefficients(coeff_set_t * p_coeff_set)
+/* -------------------------------------------------------------- 
+   load_coefficients()
+   - Recall coefficient set from PROM memory and load into the working set
+   - Check the values in memory. If a value deviates too far from its default value
+       then consider data corrupt and do not load. Meant to avoid potential damage to hardware
+   --------------------------------------------------------------
+ */
+ int load_coefficients(coeff_set_t * p_coeff_set)
 {
     coeff_set_t coeff_set_temp;
     int rtn = 0;
@@ -1506,7 +1367,14 @@ int load_coefficients(coeff_set_t * p_coeff_set)
     }
     return rtn;
 }
+// end load_coefficients() ---------------------------------------
 
+
+/* ------------------------------------------------------------
+   read_coefficients()
+   - Read coefficients from PROM memory and display
+   -------------------------------------------------------------- 
+*/
 void read_coefficients(void)
 {
     coeff_set_t coeff_set_temp;
@@ -1519,3 +1387,243 @@ void read_coefficients(void)
 
     return;
 }
+// end read_coefficients() ---------------------------------------
+
+/* ------------------------------------------------------------
+   init_system()
+   -------------------------------------------------------------- 
+*/
+void init_system(void)
+{
+    VICIntEnClr = 0xFFFFFFFF; // disable all interrupts!
+    VPBDIV = 1;
+    PINSEL0 = 0x000A1505;
+    PINSEL1 = 0x15400000; 
+    IO1DIR =  0x0C000000;  
+    IO0DIR =  0x00080751;  //Set outputs
+    IO0CLR =  0x00080751;  //Clear all outputs.
+    PWMMR4 = 7500;
+    PWMMR6 = 7500;
+    f_500us = 0;
+    f_1000ms = 0;
+    attitude = 0.0;
+    pitch_attitude  = 0;
+    roll_attitude   = 0;
+    pitch_loopInput = 0;
+    roll_loopInput  = 0;
+    pitch_loopErrK  = 0;
+    roll_loopErrK   = 0;
+    pitch_loopErrK_d = 0;
+    roll_loopErrK_d  = 0;
+    pitch_loopErrK_filt = 0;
+    roll_loopErrK_filt  = 0;
+    pitch_loopErrK_filt_d = 0;
+    roll_loopErrK_filt_d  = 0;
+    pitch_pwm = PITCH_PWM_OFFSET;
+    roll_pwm  = ROLL_PWM_OFFSET; 
+    pitch_encoder = 0x180;  // Initialization offsets
+    roll_encoder =  0x162;	
+    pitch_attitudePos = PITCH_FB_OFFSET;
+    roll_attitudePos  = ROLL_FB_OFFSET;
+    pitch_posFilter = 0;
+    roll_posFilter = 0;
+    pitch_decCntr = 0;
+    roll_decCntr = 0;
+    pitch_loopFB = 0;
+    roll_loopFB  = 0;
+       
+    PWM_Init(); // PWM Timer Initialization
+    Uart0_Init();
+    ADC_Init(); // ADC Initialization (internal A/D)
+    T1_Init();  // 0.5 msec tick
+    SPI_Init(); // initialize SPI 
+    return;
+}
+// end init_system() ---------------------------------------
+
+/* ------------------------------------------------------------
+   T1_Init()
+   - Timer initialization for periodic function triggers
+   -------------------------------------------------------------- 
+*/
+void T1_Init(void)
+{
+    VICVectAddr2 = (unsigned int) &T1_Isr;
+    VICVectCntl2 = 0x25;    // Interrupt enabled
+    VICIntEnable |= 0x20;   // Channel#5 is the Timer 1
+    T1MR0 = 30000;          // = 0.5 msec / 16,67 nsec
+    T1MCR = 3;              // Interrupt on Match0, reset timer on match
+                            // Pclk = 60 MHz, timer count = 16,67 nsec
+    T1TC  = 0;              // reset Timer counter
+    T1TCR = 1;              // enable Timer
+    return;
+}
+// end T1_Init() ---------------------------------------
+
+/* ------------------------------------------------------------
+   ADC_Init()
+   -------------------------------------------------------------- 
+*/
+void ADC_Init(void)
+{
+    ADCR = 0x00200F00; // initialize ADC: ADC operational, no burst, select AIN 0-3 F=clkdiv
+    return;
+}
+// end ADC_Init() ---------------------------------------
+
+/* ------------------------------------------------------------
+   read_adc()
+   - Read from ADC channel, blocking
+   -------------------------------------------------------------- 
+*/
+unsigned short read_adc(unsigned char channel)
+{
+    ADCR &= 0x00FFFFF0;                // Clear any previous conversion and channel
+    ADCR |=  channel;                  // Set the channel
+    ADCR |= 0x01000000;                // start conversion
+    while((ADDR & 0x80000000) == 0);   // wait for conversion done
+    return (ADDR & 0x0000FFFF) >> 6;
+}
+// end read_adc() ---------------------------------------
+
+/* ------------------------------------------------------------
+   PWM_Init()
+   -------------------------------------------------------------- 
+*/
+void PWM_Init(void)                           
+{
+    PWMPR  = 12;         // prescaler to 60, timer runs at 60 MHz / 12 = 5 MHz
+    PWMPC  = 0;          // prescale counter to 0
+    PWMTC  = 0;          // reset timer to 0
+    PWMMR0 = 15000;      // -> PMW base frequency = 5 MHz / 15000 = 333.3 Hz (3ms)
+    PWMMR4 = pitch_pwm;  // Motor 1 pulse, 1 count is 0.1 deg
+    PWMMR6 = roll_pwm;   // Motor 2 pulse
+    PWMMCR = 0x00000002; // 
+    PWMPCR = 0x5000;     // enable PWM4 PWM6 outputs
+    PWMLER = 0x7F;       // enable PWM0 - PWM6 match latch (reload)
+    PWMTCR = 0x09;       // enable PWM mode and start timer
+    return;
+}
+// end PWM_Init() ---------------------------------------
+
+/* ------------------------------------------------------------
+   SPI_Init()
+   - Setup SPI interface to ARINC Chip. Operates at 1MHz
+   -------------------------------------------------------------- 
+*/
+void SPI_Init(void)
+{
+    unsigned char i;
+
+    S0SPCR   = 0x20;               /* 0010 1000     Initialize SPI hardware:
+                                    |||| ||||
+                                    |||| | -----> reserved
+                                    ||||  ------> SPI clock phase select
+                                    ||| --------> SPI clock polarity = low when idle
+                                    || ---------> SPI master mode
+                                    | ----------> SPI data order = msb first
+                                     -----------> SPI interrupt disabled        */
+    S0SPCCR = 60; // SCK = 1 MHz, cclk = 60 MHz, counter > 8 and even
+
+    IOCLR0 = 0x00000400;     // SSEL = 1, P0.10
+    S0SPDR = 0x01;           //ARINC Reset cmd.
+    while ((S0SPSR & 0x80) == 0); //busy
+    IOSET0 = 0x00000400;
+    IOCLR0 = 0x00000400;     // SSEL = 1, P0.10
+    S0SPDR = 0x10;           //ARINC control register write
+    while ((S0SPSR & 0x80) == 0); //busy
+    S0SPDR = 0x00;           //ARINC control register values 0x08
+    while ((S0SPSR & 0x80) == 0); //busy
+    S0SPDR = 0x24;           //ARINC control register values 0x26
+    while ((S0SPSR & 0x80) == 0); //busy
+    IOSET0 = 0x00000400;
+    //  IOCLR0 = 0x00000400;     // SSEL = 1, P0.10
+    //  S0SPDR = 0x0A;
+    //  while ((S0SPSR & 0x80) == 0);
+    //  status = S0SPDR;
+    //  IOSET0 = 0x00000400;
+
+    IOCLR0 = 0x00000400;     // SSEL = 1, P0.10
+    S0SPDR = 0x06;           //ARINC label set.
+    while ((S0SPSR & 0x80) == 0); //busy
+
+    for (i = 0; i < 5; i++)
+    {
+        S0SPDR = 0x00;         //ARINC labels not selected
+        while ((S0SPSR & 0x80) == 0); //busy
+    }
+    
+    S0SPDR = 0x30;           // ARINC pitch and roll lables selected WAS 0X30
+    while ((S0SPSR & 0x80) == 0); //busy
+
+    for (i=0 ; i<26; i++)
+    {
+        S0SPDR = 0x00;         //ARINC labels not selected
+        while ((S0SPSR & 0x80) == 0); //busy
+    }
+
+    IOSET0 = 0x00000400;
+    return;
+}
+// end SPI_Init() ---------------------------------------
+
+/* ------------------------------------------------------------
+   Uart0_Init()
+   -------------------------------------------------------------- 
+*/
+void Uart0_Init(void)
+{
+    U0LCR = 0x83; // 8 bits, no Parity, 1 Stop bit
+    U0DLL = 0x21; // 115.2Kbaud for 60MHz PCLK Clock
+    U0DLM = 0x00;
+    U0FCR = 0x07; // FIFO Enabled
+    U0LCR = 0x03; // DLAB = 0
+    return;
+}
+// end Uart0_Init() ---------------------------------------
+
+/* ------------------------------------------------------------
+   ua_outchar()
+   - Output a character on the serial interface, blocking
+   -------------------------------------------------------------- 
+*/
+static void ua_outchar(char c)
+{
+    U0THR = c;
+    while(!(U0LSR & 0x40));
+    return;
+}
+// end ua_outchar() ---------------------------------------
+
+/* ------------------------------------------------------------
+   PrintString()
+   - Output an array of chars on serial interface
+   -------------------------------------------------------------- 
+*/
+void PrintString(const char *s)
+{
+    while(*s)
+    {
+        //    if(*s == '\n') ua_outchar('\r');
+        ua_outchar(*s);
+        s++;
+    }
+    return;
+}
+// end PrintString() ---------------------------------------
+
+
+/* ------------------------------------------------------------
+   T1_Isr()
+   - Interrupt Service Routine for Timer 1
+   - Triggered every 0.5ms
+   -------------------------------------------------------------- 
+*/
+__irq void T1_Isr(void)
+{
+    f_500us = 1;     // asserts every 0.5 mseconds
+    T1IR = 0x01;     // reset interrupt flag
+    VICVectAddr = 0; // reset VIC
+    return;
+}
+// end T1_Isr() ---------------------------------------

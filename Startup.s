@@ -102,7 +102,7 @@ VPBDIV          EQU     0xE01FC100      ; VPBDIV Address
 ;//               <2=> XCLK Pin = CPU Clock / 2
 ;// </e>
 VPBDIV_SETUP    EQU     1
-VPBDIV_Val      EQU     0x00000011
+VPBDIV_Val      EQU     0x00000011      ; PCLK = CCLK
 
 
 ; Phase Locked Loop (PLL) definitions
@@ -126,7 +126,7 @@ PLLSTAT_PLOCK   EQU     (1<<10)         ; PLL Lock Status
 ;//               <i> P Value
 ;// </e>
 PLL_SETUP       EQU     1
-PLLCFG_Val      EQU     0x00000024
+PLLCFG_Val      EQU     0x00000024  ; Multiplier = 5, Divider = 1 (FOSC=12MHz, CCLK=60MHz)
 
 
 ; Memory Accelerator Module (MAM) definitions
