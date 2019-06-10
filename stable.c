@@ -198,6 +198,7 @@ long  data;
 unsigned short data1, data2, data3, data4;
 unsigned int i;
 unsigned char  f_500us;
+unsigned char  f_100ms;
 unsigned int   f_1000ms;
 const    char  ascii[] = "0123456789ABCDEF";
 short pitch_ovcr;
@@ -350,7 +351,7 @@ int main (void)
         check_motor_overcurrent();
 
         if (f_500us == 1) //T1 isr every 500us 
-        {		 
+        {
             // Update input to control Loop base on mode
             if (INPUT_MODE_ARINC == input_data_mode)
             {
@@ -376,12 +377,17 @@ int main (void)
 
             // Increment Time Counters
             f_500us = 0;
+            f_100ms += 1;
             f_1000ms += 1;
         }
         
-        if (f_1000ms == 2000)      // 1000 mseconds
+        if (f_100ms == 200)      // 100 mseconds
         {
             send_output_data();
+            f_100ms = 0;
+        }
+        if (f_1000ms == 2000)      // 1000 mseconds
+        {
             f_1000ms = 0;
         }
     } // end while loop
@@ -1405,6 +1411,7 @@ void init_system(void)
     PWMMR4 = 7500;
     PWMMR6 = 7500;
     f_500us = 0;
+    f_100ms = 0;
     f_1000ms = 0;
     attitude = 0.0;
     pitch_attitude  = 0;
