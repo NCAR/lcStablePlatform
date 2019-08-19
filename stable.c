@@ -4,7 +4,7 @@
 #include <STRING.H>
 #include <MATH.H>
 
-#define FW_REV 20190216
+#define FW_REV 20190812
 //#define DEBUG  // Uncomment to add in debug functionality
 
 /* Platform Selection */
@@ -185,7 +185,7 @@ int load_coefficients(coeff_set_t * p_coeff_set);
 void read_coefficients(void);
 void update_coefficient(coeff_set_t * coeff_set, unsigned int coeff_index, float value);
 __irq void T1_Isr(void);
-
+\
 /* Global Variables */
 static char Buf[100];                  // A2D data buffer
 static char cmd_buf[COMMAND_BUF_MAX] = {0,0,0,0,0,0,0,0,0,0}; // UART Receive command buffer
@@ -780,6 +780,7 @@ static void process_inchar(void)
     if ((U0LSR & 0x01) && (command_status == COMMAND_STATUS_NOT_COMPLETE)) //If character is in RX buffer
     {
         input_char = U0RBR;
+
         switch (input_char) {
             case ('\n'):
                 cmd_buf[cmd_buf_inext] = 0x00; // NULL String termination
