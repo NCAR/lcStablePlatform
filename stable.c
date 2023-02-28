@@ -4,13 +4,13 @@
 #include <STRING.H>
 #include <MATH.H>
 
-#define FW_REV 20230227
+#define FW_REV 20230228
 //#define DEBUG  // Uncomment to add in debug functionality
 
 /* Platform Selection */
 #define TOP 0
 #define BOTTOM 1
-#define PLATFORM  TOP   // MUST SET: TOP or BOTTOM to select appropriate coeffs
+#define PLATFORM  BOTTOM   // MUST SET: TOP or BOTTOM to select appropriate coeffs
 
 /* Platform Coefficients */
 #if (PLATFORM == BOTTOM) // Updated 1/22/2019
@@ -551,6 +551,33 @@ void execute_control_loop_iteration(void)
     pitch_base = PITCH_POLARITY * (pitch_attitude + get_reference_frame_pitch_translation(reference_mode));
     roll_base = roll_attitude + get_reference_frame_roll_translation(reference_mode);
 
+    // Convert Encoder ADC Output (10-bit) to attitude position
+    pitch_attitudePos = ((float) pitch_encoder - g_coeff_set.pitch_fb_offset) * g_coeff_set.pitch_fb_gain;
+
+    // Boxcar filter and decimate the attitude position
+    pitch_posFilter = pitch_posFilter + pitch_attitudePos; // Accumulate
+    pitch_decCntr = pitch_decCntr + 1;
+    if (pitch_decCntr >= FB_AVE)
+    {
+        pitch_loopFB = pitch_posFilter / (float) FB_AVE; // Update the feedback value periodically per FB_AVE
+        pitch_posFilter = 0.0;
+        pitch_decCntr = 0;
+    }
+
+    // Convert Encoder ADC Output (10-bit) to attitude position
+    roll_attitudePos = ((float) roll_encoder - g_coeff_set.roll_fb_offset) * g_coeff_set.roll_fb_gain;
+
+    // Boxcar filter and decimate the attitude position
+    roll_posFilter = roll_posFilter + roll_attitudePos; // Accumulate
+    roll_decCntr = roll_decCntr + 1;
+    if (roll_decCntr >= FB_AVE)
+    {
+        roll_loopFB = roll_posFilter / (float) FB_AVE; // Update the feedback value periodically per FB_AVE
+        roll_posFilter = 0.0;
+        roll_decCntr = 0;
+    }
+
+
     if (LOOP_MODE_CLOSED == loop_mode)
     {
         // Apply gain adjustment and Saturate loop input
@@ -578,19 +605,6 @@ void execute_control_loop_iteration(void)
         if (pitch_pwm < g_coeff_set.pitch_pwm_min) pitch_pwm = (short) g_coeff_set.pitch_pwm_min;
         pitch_pwm = (pitch_pwm >> PWM_QUANT) << PWM_QUANT; // Truncate bits
 
-        // Convert Encoder ADC Output (10-bit) to attitude position
-        pitch_attitudePos = ((float) pitch_encoder - g_coeff_set.pitch_fb_offset) * g_coeff_set.pitch_fb_gain;
-
-        // Boxcar filter and decimate the attitude position
-        pitch_posFilter = pitch_posFilter + pitch_attitudePos; // Accumulate
-        pitch_decCntr = pitch_decCntr + 1;
-        if (pitch_decCntr >= FB_AVE)
-        {
-            pitch_loopFB = pitch_posFilter / (float) FB_AVE; // Update the feedback value periodically per FB_AVE
-            pitch_posFilter = 0.0;
-            pitch_decCntr = 0;
-        }
-
         // Calculate Loop Error and saturate
         roll_loopErrK = LOOP_K*(roll_loopInput - roll_loopFB);
         if (roll_loopErrK > ROLL_LOOPERRK_MAX) roll_loopErrK = ROLL_LOOPERRK_MAX;
@@ -607,18 +621,6 @@ void execute_control_loop_iteration(void)
         if (roll_pwm < g_coeff_set.roll_pwm_min) roll_pwm = (short) g_coeff_set.roll_pwm_min;
         roll_pwm = (roll_pwm >> PWM_QUANT) << PWM_QUANT; // Truncate bits
 
-        // Convert Encoder ADC Output (10-bit) to attitude position
-        roll_attitudePos = ((float) roll_encoder - g_coeff_set.roll_fb_offset) * g_coeff_set.roll_fb_gain;
-
-        // Boxcar filter and decimate the attitude position
-        roll_posFilter = roll_posFilter + roll_attitudePos; // Accumulate
-        roll_decCntr = roll_decCntr + 1;
-        if (roll_decCntr >= FB_AVE)
-        {
-            roll_loopFB = roll_posFilter / (float) FB_AVE; // Update the feedback value periodically per FB_AVE
-            roll_posFilter = 0.0;
-            roll_decCntr = 0;
-        }   
     }
     else if (LOOP_MODE_OPEN == loop_mode)
     {
