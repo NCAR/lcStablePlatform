@@ -4,13 +4,13 @@
 #include <STRING.H>
 #include <MATH.H>
 
-#define FW_REV 20190812
+#define FW_REV 20230227
 //#define DEBUG  // Uncomment to add in debug functionality
 
 /* Platform Selection */
 #define TOP 0
 #define BOTTOM 1
-#define PLATFORM  BOTTOM   // MUST SET: TOP or BOTTOM to select appropriate coeffs
+#define PLATFORM  TOP   // MUST SET: TOP or BOTTOM to select appropriate coeffs
 
 /* Platform Coefficients */
 #if (PLATFORM == BOTTOM) // Updated 1/22/2019
@@ -59,15 +59,15 @@
 #endif
 
 /* Control Loop Dynamics and Limits */
-#define PITCH_IN_BASE_MIN    -5  // Operational Range relative to base, min, int
-#define PITCH_IN_BASE_MAX     5  // Operational Range relative to base, max, int
-#define PITCH_LOOPERRK_MIN -100  // Loop Error saturation, min, int
-#define PITCH_LOOPERRK_MAX  100  // Loop Error saturation, max, int
+#define PITCH_IN_BASE_MIN    -5.0  // Operational Range relative to base, min, float
+#define PITCH_IN_BASE_MAX     5.0  // Operational Range relative to base, max, float
+#define PITCH_LOOPERRK_MIN -100.0  // Loop Error saturation, min, float
+#define PITCH_LOOPERRK_MAX  100.0  // Loop Error saturation, max, float
 
-#define ROLL_IN_BASE_MIN    -10  // Operational Range relative to base, min, int
-#define ROLL_IN_BASE_MAX     10  // Operational Range relative to base, max, int
-#define ROLL_LOOPERRK_MIN  -200  // Loop Error saturation, min, int
-#define ROLL_LOOPERRK_MAX   200  // Loop Error saturation, max, int
+#define ROLL_IN_BASE_MIN    -10.0  // Operational Range relative to base, min, float
+#define ROLL_IN_BASE_MAX     10.0  // Operational Range relative to base, max, float
+#define ROLL_LOOPERRK_MIN  -200.0  // Loop Error saturation, min, float
+#define ROLL_LOOPERRK_MAX   200.0  // Loop Error saturation, max, float
 
 #define LOOP_K             32.0  // Loop Gain, float
 #define LOOP_TC           24000  // Loop Time Dominant Pole Time Constant, 2*tau/T [s/s]
@@ -83,10 +83,10 @@
                                  //   Empirical observation shows this value less than 0x200, (1.64V, I_motor~150mA)
 
 /* Input Attitude Limits */
-#define PITCH_IN_MIN   PITCH_IN_BASE_MIN - PITCH_BI_TRANSLATION
-#define PITCH_IN_MAX   PITCH_IN_BASE_MAX - PITCH_BI_TRANSLATION
-#define ROLL_IN_MIN    ROLL_IN_BASE_MIN  - ROLL_BI_TRANSLATION
-#define ROLL_IN_MAX    ROLL_IN_BASE_MAX  - ROLL_BI_TRANSLATION
+#define PITCH_IN_MIN   (PITCH_IN_BASE_MIN - PITCH_BI_TRANSLATION)
+#define PITCH_IN_MAX   (PITCH_IN_BASE_MAX - PITCH_BI_TRANSLATION)
+#define ROLL_IN_MIN    (ROLL_IN_BASE_MIN  - ROLL_BI_TRANSLATION)
+#define ROLL_IN_MAX    (ROLL_IN_BASE_MAX  - ROLL_BI_TRANSLATION)
 
 /* Operational Modes Options */
 #define INPUT_MODE_ARINC     0  // Input Data Modes
@@ -185,7 +185,7 @@ int load_coefficients(coeff_set_t * p_coeff_set);
 void read_coefficients(void);
 void update_coefficient(coeff_set_t * coeff_set, unsigned int coeff_index, float value);
 __irq void T1_Isr(void);
-\
+
 /* Global Variables */
 static char Buf[100];                  // A2D data buffer
 static char cmd_buf[COMMAND_BUF_MAX] = {0,0,0,0,0,0,0,0,0,0}; // UART Receive command buffer
@@ -208,7 +208,7 @@ float attitude;
 // Operational Modes (Global)
 static short input_data_mode  = INPUT_MODE_ARINC;
 static short output_data_mode = OUTPUT_MODE_STREAM;
-static short loop_mode        = LOOP_MODE_CLOSED;
+static short loop_mode        = LOOP_MODE_OPEN;
 static short reference_mode   = REFERENCE_MODE_INS;
 static short write_prom_mode  = WRITE_PROM_MODE_DISABLED;
 
@@ -626,7 +626,7 @@ void execute_control_loop_iteration(void)
         if (pitch_pwm > g_coeff_set.pitch_pwm_max) pitch_pwm = g_coeff_set.pitch_pwm_max;
         if (pitch_pwm < g_coeff_set.pitch_pwm_min) pitch_pwm = g_coeff_set.pitch_pwm_min;
 
-        roll_pwm =  (short)(roll_base * ROLL_PWM_GAIN + ROLL_PWM_OFFSET);
+        roll_pwm =  (short)(roll_base * g_coeff_set.roll_pwm_gain + g_coeff_set.roll_pwm_offset);
         if (roll_pwm > g_coeff_set.roll_pwm_max) roll_pwm = g_coeff_set.roll_pwm_max;
         if (roll_pwm < g_coeff_set.roll_pwm_min) roll_pwm = g_coeff_set.roll_pwm_min;
     }
@@ -980,12 +980,18 @@ static void process_command(void)
     {
         int temp_arg = 0;
         PrintString("!MP Received\r\n");
-        if (INPUT_MODE_MANUAL == input_data_mode)
+        if ((INPUT_MODE_MANUAL == input_data_mode) && (REFERENCE_MODE_INS == reference_mode))
         {
             temp_arg = atoi(cmd_arg1);
-            if ((temp_arg > g_coeff_set.pitch_in_max)) temp_arg = 0;
-            if ((temp_arg < g_coeff_set.pitch_in_min)) temp_arg = 0;
-
+            if ((temp_arg > g_coeff_set.pitch_in_max)) temp_arg = g_coeff_set.pitch_in_max;
+            if ((temp_arg < g_coeff_set.pitch_in_min)) temp_arg = g_coeff_set.pitch_in_min;
+            pitch_attitude = temp_arg;       
+		}
+		else if	((INPUT_MODE_MANUAL == input_data_mode) && (REFERENCE_MODE_BASE == reference_mode))
+		{
+            temp_arg = atoi(cmd_arg1);
+            if ((temp_arg > PITCH_IN_BASE_MAX)) temp_arg = PITCH_IN_BASE_MAX;
+            if ((temp_arg < PITCH_IN_BASE_MIN)) temp_arg = PITCH_IN_BASE_MIN;
             pitch_attitude = temp_arg;       
         }
         else
@@ -997,12 +1003,18 @@ static void process_command(void)
     {
         int temp_arg = 0;
         PrintString("!MR Received\r\n");
-        if (INPUT_MODE_MANUAL == input_data_mode)
+        if ((INPUT_MODE_MANUAL == input_data_mode) && (REFERENCE_MODE_INS == reference_mode))
         {
             temp_arg = atoi(cmd_arg1);
-            if ((temp_arg > g_coeff_set.roll_in_max)) temp_arg = 0;
-            if ((temp_arg < g_coeff_set.roll_in_min)) temp_arg = 0;
-
+            if ((temp_arg > g_coeff_set.roll_in_max)) temp_arg = g_coeff_set.roll_in_max;
+            if ((temp_arg < g_coeff_set.roll_in_min)) temp_arg = g_coeff_set.roll_in_min;
+            roll_attitude = temp_arg;
+        }
+		else if	((INPUT_MODE_MANUAL == input_data_mode) && (REFERENCE_MODE_BASE == reference_mode))
+		{
+            temp_arg = atoi(cmd_arg1);
+            if ((temp_arg > ROLL_IN_BASE_MAX)) temp_arg = ROLL_IN_BASE_MAX;
+            if ((temp_arg < ROLL_IN_BASE_MIN)) temp_arg = ROLL_IN_BASE_MIN;
             roll_attitude = temp_arg;
         }
         else
