@@ -13,8 +13,7 @@
 
 // Platform type is no longer controlled by #define, rather, is now included in saved memory structure
 //   PLATFORM value here merely sets the starter coefficients for an unprogrammed memory.
-//   TOP is used because it has more restrictive PWM limits
-#define PLATFORM  TOP   // MUST SET: TOP or BOTTOM to select appropriate coeffs
+//#define PLATFORM  TOP   // MUST SET: TOP or BOTTOM to select appropriate coeffs
 
 /* Platform Coefficients */
 #define PITCH_BI_TRANSLATION 0.0 // Translates Pitch from INS ref frame to platform base ref frame
@@ -103,13 +102,6 @@
                                  //   This value must be 0x300 or below (corresponding to 2.48V) due to sense diode drop
                                  //   Empirical observation shows this value less than 0x200, (1.64V, I_motor~150mA)
 
-/* Input Attitude Limits */
-// Attitude input limits moved to variable. Depends on programmabe pitch_bi_translation
-//#define PITCH_IN_MIN   (PITCH_IN_BASE_MIN - PITCH_BI_TRANSLATION)
-//#define PITCH_IN_MAX   (PITCH_IN_BASE_MAX - PITCH_BI_TRANSLATION)
-//#define ROLL_IN_MIN    (ROLL_IN_BASE_MIN  - ROLL_BI_TRANSLATION)
-//#define ROLL_IN_MAX    (ROLL_IN_BASE_MAX  - ROLL_BI_TRANSLATION)
-
 /* Operational Modes Options */
 #define INPUT_MODE_ARINC     0  // Input Data Modes
 #define INPUT_MODE_MANUAL    1
@@ -154,8 +146,7 @@
 #define CONFIG_SAVE_ADDR   0x00038200 // 256kB Part, Sector 14: 0x00038000 - 0x00039FFF
 
 
-// coeff_set_t, structure of control loop coefficients
-//typedef struct coeff_set_struct
+// plat_config_t, structure of coefficients and configurations
 typedef struct platform_config_struct
 {
     float pitch_bi_translation;
@@ -217,7 +208,6 @@ static char cmd_buf[COMMAND_BUF_MAX] = {0,0,0,0,0,0,0,0,0,0}; // UART Receive co
 static int  cmd_buf_inext = 0;         // Next available cmd_buf index
 static short command_status = COMMAND_STATUS_NOT_COMPLETE;
 static char cmd_delim[] = ",";
-
 
 long  data;
 unsigned short data1, data2, data3, data4;
@@ -336,7 +326,7 @@ int main (void)
     g_config.pitch_in_max         = (float)        (PITCH_IN_BASE_MAX - PITCH_BI_TRANSLATION);
     g_config.roll_in_min          = (float)        (ROLL_IN_BASE_MIN  - ROLL_BI_TRANSLATION);
     g_config.roll_in_max          = (float)        (ROLL_IN_BASE_MAX  - PITCH_BI_TRANSLATION);
-    g_config.platform_type        = (unsigned short) PLATFORM;
+    g_config.platform_type        = (unsigned short) TOP;
 
     PrintString("!--- Default Coeffs ---\n");
     send_coeffs(&g_config);
