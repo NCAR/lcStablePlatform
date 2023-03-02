@@ -4,18 +4,39 @@
 #include <STRING.H>
 #include <MATH.H>
 
-#define FW_REV 20230228
+#define FW_REV 20230301
 //#define DEBUG  // Uncomment to add in debug functionality
 
 /* Platform Selection */
 #define TOP 0
 #define BOTTOM 1
-#define PLATFORM  BOTTOM   // MUST SET: TOP or BOTTOM to select appropriate coeffs
+
+// Platform type is no longer controlled by #define, rather, is now included in saved memory structure
+//   PLATFORM value here merely sets the starter coefficients for an unprogrammed memory.
+//   TOP is used because it has more restrictive PWM limits
+#define PLATFORM  TOP   // MUST SET: TOP or BOTTOM to select appropriate coeffs
 
 /* Platform Coefficients */
+#define PITCH_BI_TRANSLATION 0.0 // Translates Pitch from INS ref frame to platform base ref frame
+                                 //   Negative to correct positive aircraft pitch
+                                 //   Platform mounting estimated -2.9deg relative to airframe
+#define PITCH_PWM_MIN      5000  // PWM code min limit, int
+#define PITCH_PWM_MAX      9000  // PWM code max limit, int
+#define PITCH_PWM_GAIN    300.0  // PWM to Actuator position angle gain, float
+#define PITCH_PWM_OFFSET   7000  // PWM to Actuator position angle offset, flat to platform (est.), int
+#define PITCH_FB_GAIN     0.030  // ADC output to attitude angle feedback gain, float
+#define PITCH_FB_OFFSET   300.0  // ADC output to attitude angle feedback offset, flat to platform, float
+
+#define ROLL_BI_TRANSLATION 0.0  // Translates Roll from INS ref frame to platform base ref frame
+#define ROLL_PWM_MIN       5000  // PWM code min limit, int
+#define ROLL_PWM_MAX       9000  // PWM code max limit, int
+#define ROLL_PWM_GAIN     100.0  // PWM to Actuator position angle gain (est.), float
+#define ROLL_PWM_OFFSET    7000  // PWM to Actuator position angle offset, flat to platform (est.), int
+#define ROLL_FB_GAIN       0.10  // ADC output to attitude angle feedback gain, float
+#define ROLL_FB_OFFSET    200.0  // ADC output to attitude angle feedback offset, flat to platform, float
+/*
 #if (PLATFORM == BOTTOM) // Updated 1/22/2019
 
-#define PITCH_POLARITY          1.0  // Set pitch equation polarity (+1.0) for bottom platform, float
 #define PITCH_BI_TRANSLATION   -2.9  // Translates Pitch from INS ref frame to platform base ref frame
                                  //   Negative correction polarity corrects positive aircraft pitch
                                  //   Platform mounting estimated -2.9deg relative to airframe
@@ -36,7 +57,6 @@
 
 #elif (PLATFORM == TOP) // Updated 1/22/2018
 
-#define PITCH_POLARITY       -1.0  // Set pitch equation polarity (+1.0) for bottom platform, float
 #define PITCH_BI_TRANSLATION -2.9  // Translates Pitch from INS ref frame to platform base ref frame
                                  //   Negative to correct positive aircraft pitch
                                  //   Platform mounting estimated -2.9deg relative to airframe
@@ -57,6 +77,7 @@
 
 #else
 #endif
+*/
 
 /* Control Loop Dynamics and Limits */
 #define PITCH_IN_BASE_MIN    -5.0  // Operational Range relative to base, min, float
@@ -83,10 +104,11 @@
                                  //   Empirical observation shows this value less than 0x200, (1.64V, I_motor~150mA)
 
 /* Input Attitude Limits */
-#define PITCH_IN_MIN   (PITCH_IN_BASE_MIN - PITCH_BI_TRANSLATION)
-#define PITCH_IN_MAX   (PITCH_IN_BASE_MAX - PITCH_BI_TRANSLATION)
-#define ROLL_IN_MIN    (ROLL_IN_BASE_MIN  - ROLL_BI_TRANSLATION)
-#define ROLL_IN_MAX    (ROLL_IN_BASE_MAX  - ROLL_BI_TRANSLATION)
+// Attitude input limits moved to variable. Depends on programmabe pitch_bi_translation
+//#define PITCH_IN_MIN   (PITCH_IN_BASE_MIN - PITCH_BI_TRANSLATION)
+//#define PITCH_IN_MAX   (PITCH_IN_BASE_MAX - PITCH_BI_TRANSLATION)
+//#define ROLL_IN_MIN    (ROLL_IN_BASE_MIN  - ROLL_BI_TRANSLATION)
+//#define ROLL_IN_MAX    (ROLL_IN_BASE_MAX  - ROLL_BI_TRANSLATION)
 
 /* Operational Modes Options */
 #define INPUT_MODE_ARINC     0  // Input Data Modes
@@ -98,11 +120,11 @@
 #define OUTPUT_MODE_SILENT   1  // Do not sent data
 #define OUTPUT_MODE_EXAMPLE  2  // Send Example Data
 
-#define LOOP_MODE_CLOSED     0  // Control Loop Modes
-#define LOOP_MODE_OPEN       1
+#define LOOP_MODE_OPEN     0  // Control Loop Modes
+#define LOOP_MODE_CLOSED   1
 
-#define REFERENCE_MODE_INS   0  // Reference frame modes
-#define REFERENCE_MODE_BASE  1
+#define REFERENCE_MODE_BASE 1  // Reference frame modes
+#define REFERENCE_MODE_INS  0
 
 #define WRITE_PROM_MODE_ENABLED   0
 #define WRITE_PROM_MODE_DISABLED  1
@@ -128,12 +150,13 @@
 // Note: use of IAP operations requires non-access of base 32Bytes of RAM
 //  Project options modified to start RAM access at 0x40001000 instead of 0x40000000
 #define IAP_LOCATION 0x7ffffff1
-#define COEFF_SAVE_SECTOR 0x0E 
-#define COEFF_SAVE_ADDR   0x00038200 // 256kB Part, Sector 14: 0x00038000 - 0x00039FFF
+#define CONFIG_SAVE_SECTOR 0x0E 
+#define CONFIG_SAVE_ADDR   0x00038200 // 256kB Part, Sector 14: 0x00038000 - 0x00039FFF
 
 
 // coeff_set_t, structure of control loop coefficients
-typedef struct coeff_set_struct
+//typedef struct coeff_set_struct
+typedef struct platform_config_struct
 {
     float pitch_bi_translation;
     unsigned int pitch_pwm_min;
@@ -155,7 +178,9 @@ typedef struct coeff_set_struct
     float pitch_in_max;
     float roll_in_min;
     float roll_in_max;
-} coeff_set_t;
+
+    unsigned short platform_type;   // 0=TOP, 1=BOTTOM
+} plat_config_t;
 
 /* Function Prototypes */
 void execute_control_loop_iteration(void);
@@ -164,7 +189,7 @@ void test_pattern_update_loop_input(void);
 void calibration_update_loop_input(void);
 void send_output_data(void);
 void send_const(void);
-void send_coeffs(coeff_set_t * coeff_set);
+void send_coeffs(plat_config_t * p_config);
 void check_motor_overcurrent(void);
 float get_reference_frame_pitch_translation(short ref_mode);
 float get_reference_frame_roll_translation(short ref_mode);
@@ -180,10 +205,10 @@ void PrintString(const char *s);
 static void process_inchar(void);
 static void process_command(void);
 unsigned short read_adc(unsigned char);
-int save_coefficients(coeff_set_t * p_coeff_set);
-int load_coefficients(coeff_set_t * p_coeff_set);
+int save_configurations(plat_config_t * p_config);
+int load_configurations(plat_config_t * p_config);
 void read_coefficients(void);
-void update_coefficient(coeff_set_t * coeff_set, unsigned int coeff_index, float value);
+void update_configuration(plat_config_t * p_config, unsigned int config_index, float value);
 __irq void T1_Isr(void);
 
 /* Global Variables */
@@ -208,9 +233,9 @@ float attitude;
 // Operational Modes (Global)
 static short input_data_mode  = INPUT_MODE_ARINC;
 static short output_data_mode = OUTPUT_MODE_STREAM;
-static short loop_mode        = LOOP_MODE_OPEN;
 static short reference_mode   = REFERENCE_MODE_INS;
 static short write_prom_mode  = WRITE_PROM_MODE_DISABLED;
+static short loop_mode        = LOOP_MODE_OPEN;
 
 // Test Pattern position sequence  (Global)
 // Note: test pattern pitch and roll angles do not include mounting corrections
@@ -225,18 +250,20 @@ unsigned int tp_counter = 0;
 //   Test 5 position, approach from both sides, cross (t) or Criss-cross (x) pattern
 //   Even indexes are approach position, odd are measurement positions
 //   pitch angles are offset to correspond to true leveling relative to ground
+//   X-pattern removed due to reduce program memory size.
 const float cal_roll_angles_t[CAL_SEQ_LEN]  = {0.0,0.0,0.0,0.0, 0.0,0.0,0.0,0.0, 0.0,0.0,0.0,0.0,
                                              -7.0,-6.0,-5.0,-6.0, -1.0,0.0,1.0,0.0, 5.0,6.0,7.0,6.0};
 const float cal_pitch_angles_t[CAL_SEQ_LEN] = {-4.0,-3.0,-2.0,-3.0, -1.0,0.0, 1.0,0.0, 2.0,3.0,4.0,3.0, 
                                               0.0,0.0,0.0,0.0, 0.0,0.0,0.0,0.0, 0.0,0.0,0.0,0.0};
-const float cal_roll_angles_x[CAL_SEQ_LEN]  = {-7.0,-6.0,-5.0,-6.0, -1.0,0.0,1.0,0.0, 5.0,6.0,7.0,6.0,
-                                               -7.0,-6.0,-5.0,-6.0, -1.0,0.0,1.0,0.0, 5.0,6.0,7.0,6.0};
-const float cal_pitch_angles_x[CAL_SEQ_LEN] = {-4.0,-3.0,-2.0,-3.0, -1.0,0.0, 1.0,0.0, 2.0,3.0,4.0,3.0, 
-                                               -2.0,-3.0,-4.0,-3.0,  1.0,0.0,-1.0,0.0, 4.0,3.0,2.0,3.0};
+//const float cal_roll_angles_x[CAL_SEQ_LEN]  = {-7.0,-6.0,-5.0,-6.0, -1.0,0.0,1.0,0.0, 5.0,6.0,7.0,6.0,
+//                                               -7.0,-6.0,-5.0,-6.0, -1.0,0.0,1.0,0.0, 5.0,6.0,7.0,6.0};
+//const float cal_pitch_angles_x[CAL_SEQ_LEN] = {-4.0,-3.0,-2.0,-3.0, -1.0,0.0, 1.0,0.0, 2.0,3.0,4.0,3.0, 
+//                                               -2.0,-3.0,-4.0,-3.0,  1.0,0.0,-1.0,0.0, 4.0,3.0,2.0,3.0};
 int   cal_sequence_counter = 0; // Counter to adjust time between positions
 short cal_sequence_index = 0;   // Advances the position of the cal sequence
 
-coeff_set_t g_coeff_set; // Working control loop coefficient set (Global)
+/* Working configuration set (Global) */
+plat_config_t g_config;
 
 /* Control loop state variables (Global) */
 float pitch_attitude;
@@ -287,50 +314,46 @@ int main (void)
     int rtn = 0;
 
     init_system();
-    PrintString("\r\n\r\n!NCAR Stabilized Platform\r\n");
+    PrintString("\n\n!NCAR Stabilized Platform\n");
     send_const();
 
     /* Init Coeff Structure with Default Coefficients */
-    g_coeff_set.pitch_bi_translation = (float)        PITCH_BI_TRANSLATION;
-    g_coeff_set.pitch_pwm_min        = (unsigned int) PITCH_PWM_MIN;
-    g_coeff_set.pitch_pwm_max        = (unsigned int) PITCH_PWM_MAX;
-    g_coeff_set.pitch_pwm_gain       = (float)        PITCH_PWM_GAIN;
-    g_coeff_set.pitch_pwm_offset     = (unsigned int) PITCH_PWM_OFFSET;
-    g_coeff_set.pitch_fb_gain        = (float)        PITCH_FB_GAIN;
-    g_coeff_set.pitch_fb_offset      = (float)        PITCH_FB_OFFSET;
-    g_coeff_set.roll_bi_translation  = (float)        ROLL_BI_TRANSLATION;
-    g_coeff_set.roll_pwm_min         = (unsigned int) ROLL_PWM_MIN;
-    g_coeff_set.roll_pwm_max         = (unsigned int) ROLL_PWM_MAX;
-    g_coeff_set.roll_pwm_gain        = (float)        ROLL_PWM_GAIN;
-    g_coeff_set.roll_pwm_offset      = (unsigned int) ROLL_PWM_OFFSET;
-    g_coeff_set.roll_fb_gain         = (float)        ROLL_FB_GAIN;
-    g_coeff_set.roll_fb_offset       = (float)        ROLL_FB_OFFSET;
-    g_coeff_set.pitch_in_min         = (float)        PITCH_IN_MIN;
-    g_coeff_set.pitch_in_max         = (float)        PITCH_IN_MAX;
-    g_coeff_set.roll_in_min          = (float)        ROLL_IN_MIN;
-    g_coeff_set.roll_in_max          = (float)        ROLL_IN_MAX;
+    g_config.pitch_bi_translation = (float)        PITCH_BI_TRANSLATION;
+    g_config.pitch_pwm_min        = (unsigned int) PITCH_PWM_MIN;
+    g_config.pitch_pwm_max        = (unsigned int) PITCH_PWM_MAX;
+    g_config.pitch_pwm_gain       = (float)        PITCH_PWM_GAIN;
+    g_config.pitch_pwm_offset     = (unsigned int) PITCH_PWM_OFFSET;
+    g_config.pitch_fb_gain        = (float)        PITCH_FB_GAIN;
+    g_config.pitch_fb_offset      = (float)        PITCH_FB_OFFSET;
+    g_config.roll_bi_translation  = (float)        ROLL_BI_TRANSLATION;
+    g_config.roll_pwm_min         = (unsigned int) ROLL_PWM_MIN;
+    g_config.roll_pwm_max         = (unsigned int) ROLL_PWM_MAX;
+    g_config.roll_pwm_gain        = (float)        ROLL_PWM_GAIN;
+    g_config.roll_pwm_offset      = (unsigned int) ROLL_PWM_OFFSET;
+    g_config.roll_fb_gain         = (float)        ROLL_FB_GAIN;
+    g_config.roll_fb_offset       = (float)        ROLL_FB_OFFSET;
+    g_config.pitch_in_min         = (float)        (PITCH_IN_BASE_MIN - PITCH_BI_TRANSLATION);
+    g_config.pitch_in_max         = (float)        (PITCH_IN_BASE_MAX - PITCH_BI_TRANSLATION);
+    g_config.roll_in_min          = (float)        (ROLL_IN_BASE_MIN  - ROLL_BI_TRANSLATION);
+    g_config.roll_in_max          = (float)        (ROLL_IN_BASE_MAX  - PITCH_BI_TRANSLATION);
+    g_config.platform_type        = (unsigned short) PLATFORM;
 
-    PrintString("!--- Default Coefficients ---\r\n");
-    send_coeffs(&g_coeff_set);
+    PrintString("!--- Default Coeffs ---\n");
+    send_coeffs(&g_config);
 
     /* Load Coefficients from Memory, If Possible */
-    PrintString("\r\n!Loading Coeffs from Memory...\r\n");
-    rtn = load_coefficients(&g_coeff_set);
+    PrintString("\n!Loading Coeffs from Memory\n");
+    rtn = load_configurations(&g_config);
     if (0 == rtn) 
     {
-        PrintString("!Load Successful\r\n");
+        PrintString("!Load Successful\n");
     }
-    else   // If unable to load from memory, then save defaults to memory
+    else   // If unable to load from memory, then print error enter silent output mode.
     {
-        PrintString("!Load FAILED\r\n");
-        PrintString("\r\n!Saving Default Coeffs to Memory...\r\n");
-        rtn = save_coefficients(&g_coeff_set);
-        if (0 == rtn) {
-            PrintString("!Saving to Memory Successful\r\n");
-        }
-        else {
-            PrintString("!Saving to Memory FAILED\r\n");
-        }
+        PrintString("\n!--- Working Coeffs ---\n");
+        send_coeffs(&g_config);
+        PrintString("\n!Load ERRORS, check configs\n");
+        output_data_mode = OUTPUT_MODE_SILENT; 
     }
   
     while (1) // Loop forever
@@ -445,8 +468,8 @@ void read_arinc_update_loop_input(void)
 
                 // Verify that attitude input does not exceed limits
                 pitch_attitude = attitude;
-                if (pitch_attitude > g_coeff_set.pitch_in_max) pitch_attitude = g_coeff_set.pitch_in_max;
-                if (pitch_attitude < g_coeff_set.pitch_in_min) pitch_attitude = g_coeff_set.pitch_in_min;
+                if (pitch_attitude > g_config.pitch_in_max) pitch_attitude = g_config.pitch_in_max;
+                if (pitch_attitude < g_config.pitch_in_min) pitch_attitude = g_config.pitch_in_min;
             break;
                 
             case ROLL_LABEL:
@@ -454,8 +477,8 @@ void read_arinc_update_loop_input(void)
 
                 // Verify that attitude input does not exceed limits
                 roll_attitude = attitude;
-                if (roll_attitude > g_coeff_set.roll_in_max) roll_attitude = g_coeff_set.roll_in_max;
-                if (roll_attitude < g_coeff_set.roll_in_min) roll_attitude = g_coeff_set.roll_in_min;
+                if (roll_attitude > g_config.roll_in_max) roll_attitude = g_config.roll_in_max;
+                if (roll_attitude < g_config.roll_in_min) roll_attitude = g_config.roll_in_min;
             break;
 
             default:
@@ -530,7 +553,7 @@ void calibration_update_loop_input(void)
         cal_sequence_index = 0;
         cal_sequence_counter = 0;
         input_data_mode = INPUT_MODE_MANUAL;
-        PrintString("!CAL DONE, now IMM\r\n");
+        PrintString("!CAL DONE, now IMM\n");
     }
 }
 // end calibration_update_loop_input() ------------------------------------------------------------
@@ -548,11 +571,18 @@ void calibration_update_loop_input(void)
 */
 void execute_control_loop_iteration(void)
 {
-    pitch_base = PITCH_POLARITY * (pitch_attitude + get_reference_frame_pitch_translation(reference_mode));
+    if (g_config.platform_type == TOP) // Pitch base polarity depends on platform as TOP or BOTTOM
+    {
+        pitch_base = -1.0 * (pitch_attitude + get_reference_frame_pitch_translation(reference_mode));
+    }
+    else
+    {
+        pitch_base = (pitch_attitude + get_reference_frame_pitch_translation(reference_mode));
+    }
     roll_base = roll_attitude + get_reference_frame_roll_translation(reference_mode);
 
     // Convert Encoder ADC Output (10-bit) to attitude position
-    pitch_attitudePos = ((float) pitch_encoder - g_coeff_set.pitch_fb_offset) * g_coeff_set.pitch_fb_gain;
+    pitch_attitudePos = ((float) pitch_encoder - g_config.pitch_fb_offset) * g_config.pitch_fb_gain;
 
     // Boxcar filter and decimate the attitude position
     pitch_posFilter = pitch_posFilter + pitch_attitudePos; // Accumulate
@@ -565,7 +595,7 @@ void execute_control_loop_iteration(void)
     }
 
     // Convert Encoder ADC Output (10-bit) to attitude position
-    roll_attitudePos = ((float) roll_encoder - g_coeff_set.roll_fb_offset) * g_coeff_set.roll_fb_gain;
+    roll_attitudePos = ((float) roll_encoder - g_config.roll_fb_offset) * g_config.roll_fb_gain;
 
     // Boxcar filter and decimate the attitude position
     roll_posFilter = roll_posFilter + roll_attitudePos; // Accumulate
@@ -600,9 +630,9 @@ void execute_control_loop_iteration(void)
         pitch_loopErrK_filt_d = pitch_loopErrK_filt;
 
         // Convert Loop Error to PWM conversion factors, quantize, and limit
-        pitch_pwm = (short) (pitch_loopErrK_filt * g_coeff_set.pitch_pwm_gain + g_coeff_set.pitch_pwm_offset);
-        if (pitch_pwm > g_coeff_set.pitch_pwm_max) pitch_pwm = (short) g_coeff_set.pitch_pwm_max;
-        if (pitch_pwm < g_coeff_set.pitch_pwm_min) pitch_pwm = (short) g_coeff_set.pitch_pwm_min;
+        pitch_pwm = (short) (pitch_loopErrK_filt * g_config.pitch_pwm_gain + g_config.pitch_pwm_offset);
+        if (pitch_pwm > g_config.pitch_pwm_max) pitch_pwm = (short) g_config.pitch_pwm_max;
+        if (pitch_pwm < g_config.pitch_pwm_min) pitch_pwm = (short) g_config.pitch_pwm_min;
         pitch_pwm = (pitch_pwm >> PWM_QUANT) << PWM_QUANT; // Truncate bits
 
         // Calculate Loop Error and saturate
@@ -616,21 +646,21 @@ void execute_control_loop_iteration(void)
         roll_loopErrK_filt_d = roll_loopErrK_filt;
 
         // Convert Loop Error to PWM conversion factors, quantize, and limit
-        roll_pwm = (short) (roll_loopErrK_filt * g_coeff_set.roll_pwm_gain + g_coeff_set.roll_pwm_offset);
-        if (roll_pwm > g_coeff_set.roll_pwm_max) roll_pwm = (short) g_coeff_set.roll_pwm_max;
-        if (roll_pwm < g_coeff_set.roll_pwm_min) roll_pwm = (short) g_coeff_set.roll_pwm_min;
+        roll_pwm = (short) (roll_loopErrK_filt * g_config.roll_pwm_gain + g_config.roll_pwm_offset);
+        if (roll_pwm > g_config.roll_pwm_max) roll_pwm = (short) g_config.roll_pwm_max;
+        if (roll_pwm < g_config.roll_pwm_min) roll_pwm = (short) g_config.roll_pwm_min;
         roll_pwm = (roll_pwm >> PWM_QUANT) << PWM_QUANT; // Truncate bits
 
     }
     else if (LOOP_MODE_OPEN == loop_mode)
     {
-        pitch_pwm = (short)(pitch_base * g_coeff_set.pitch_pwm_gain + g_coeff_set.pitch_pwm_offset);
-        if (pitch_pwm > g_coeff_set.pitch_pwm_max) pitch_pwm = g_coeff_set.pitch_pwm_max;
-        if (pitch_pwm < g_coeff_set.pitch_pwm_min) pitch_pwm = g_coeff_set.pitch_pwm_min;
+        pitch_pwm = (short)(pitch_base * g_config.pitch_pwm_gain + g_config.pitch_pwm_offset);
+        if (pitch_pwm > g_config.pitch_pwm_max) pitch_pwm = g_config.pitch_pwm_max;
+        if (pitch_pwm < g_config.pitch_pwm_min) pitch_pwm = g_config.pitch_pwm_min;
 
-        roll_pwm =  (short)(roll_base * g_coeff_set.roll_pwm_gain + g_coeff_set.roll_pwm_offset);
-        if (roll_pwm > g_coeff_set.roll_pwm_max) roll_pwm = g_coeff_set.roll_pwm_max;
-        if (roll_pwm < g_coeff_set.roll_pwm_min) roll_pwm = g_coeff_set.roll_pwm_min;
+        roll_pwm =  (short)(roll_base * g_config.roll_pwm_gain + g_config.roll_pwm_offset);
+        if (roll_pwm > g_config.roll_pwm_max) roll_pwm = g_config.roll_pwm_max;
+        if (roll_pwm < g_config.roll_pwm_min) roll_pwm = g_config.roll_pwm_min;
     }
     else
     {}
@@ -659,25 +689,25 @@ void send_output_data(void)
 {
     if (OUTPUT_MODE_STREAM == output_data_mode)
     {
-        sprintf(Buf,"#%.2f,%d,%d,%.2f,%d,%.2f,%d,%d,%.2f,%d\r\n",  
+        sprintf(Buf,"#%.2f,%d,%d,%.2f,%d,%.2f,%d,%d,%.2f,%d\n",  
                     pitch_attitude, pitch_pwm, pitch_encoder, pitch_loopFB, pitch_ovcr,
                     roll_attitude,  roll_pwm,  roll_encoder,  roll_loopFB,  roll_ovcr);
         PrintString(Buf);
 
 #ifdef DEBUG
-        sprintf(Buf,"Pin:%.2f,Ppwm:%d,Penc:%d,Pfb:%.2f,Rin:%.2f,Rpwm:%d,Renc:%d,Rfb:%.2f\r\n",  
+        sprintf(Buf,"Pin:%.2f,Ppwm:%d,Penc:%d,Pfb:%.2f,Rin:%.2f,Rpwm:%d,Renc:%d,Rfb:%.2f\n",  
                     pitch_attitude, pitch_pwm, pitch_encoder, pitch_loopFB, roll_attitude, roll_pwm, roll_encoder, roll_loopFB); // 89-char
         PrintString(Buf);
-        sprintf(Buf,"Err:%.3f,Erf:%.3f,Enc:%d,FB:%.2f\r\n", pitch_loopErrK, pitch_loopErrK_filt, pitch_encoder, pitch_loopFB);
+        sprintf(Buf,"Err:%.3f,Erf:%.3f,Enc:%d,FB:%.2f\n", pitch_loopErrK, pitch_loopErrK_filt, pitch_encoder, pitch_loopFB);
         PrintString(Buf);
-        sprintf(Buf,"Err:%.3f,Erf:%.3f,Enc:%d,FB:%.2f\r\n", roll_loopErrK, roll_loopErrK_filt, roll_encoder, roll_loopFB);
+        sprintf(Buf,"Err:%.3f,Erf:%.3f,Enc:%d,FB:%.2f\n", roll_loopErrK, roll_loopErrK_filt, roll_encoder, roll_loopFB);
         PrintString(Buf);
 #endif
 
     }
     else if (OUTPUT_MODE_EXAMPLE == output_data_mode)
     {
-        sprintf(Buf,"#9.99,9999,999,9.99,999,-9.99,9999,999,-9.99,999\r\n");
+        sprintf(Buf,"#9.99,9999,999,9.99,999,-9.99,9999,999,-9.99,999\n");
         PrintString(Buf);
     }
     else if (OUTPUT_MODE_SILENT == output_data_mode)
@@ -699,7 +729,7 @@ float get_reference_frame_pitch_translation(short ref_mode)
     float translation = 0.0;
     if (REFERENCE_MODE_INS == ref_mode)
     {
-        translation = g_coeff_set.pitch_bi_translation;
+        translation = g_config.pitch_bi_translation;
     }
     else if (REFERENCE_MODE_BASE == ref_mode)
     {
@@ -724,15 +754,7 @@ float get_reference_frame_roll_translation(short ref_mode)
     float translation = 0.0;
     if (REFERENCE_MODE_INS == ref_mode)
     {
-        translation = g_coeff_set.roll_bi_translation;
-    }
-    else if (REFERENCE_MODE_BASE == ref_mode)
-    {
-        translation = 0.0;
-    }
-    else
-    {
-        translation = 0.0;
+        translation = g_config.roll_bi_translation;
     }
     return translation;
 }
@@ -749,7 +771,7 @@ void check_motor_overcurrent(void)
       PWMMR4 = 0;
       PWMMR6 = 0;
       PWMLER = 0x7F; // enable PWM4-PWM6 match latch (reload
-      PrintString("\r\nMotor Current Overload\r\n");
+      PrintString("\nWARNING: Motor Overcurrent\n");
       while (1); // wait for a RESET
     }
     return;
@@ -838,13 +860,13 @@ static void process_command(void)
     
     if (0 == strcmp("#NOR", cmd_command)) // Normal Input/Output Mode
     {
-        PrintString("!NOR Received\r\n");
+        PrintString("!NOR Rcvd\n");
         input_data_mode = INPUT_MODE_ARINC;
         output_data_mode = OUTPUT_MODE_STREAM;
     }
     else if (0 == strcmp("#CAL", cmd_command)) // Calibration Sequence
     {    
-        PrintString("!CAL Received\r\n");
+        PrintString("!CAL Rcvd\n");
         cal_sequence_index = 0;
         cal_sequence_counter = 0;
         input_data_mode = INPUT_MODE_CAL;
@@ -852,122 +874,124 @@ static void process_command(void)
     }
     else if (0 == strcmp("#OMN", cmd_command)) // Output Mode: Normal, Streaming
     {
-        PrintString("!OMN Received\r\n");
+        PrintString("!OMN Rcvd\n");
         output_data_mode = OUTPUT_MODE_STREAM;
     }
     else if (0 == strcmp("#OMS", cmd_command)) // Output Mode: Silent
     {
-        PrintString("!OMS Received\r\n");
+        PrintString("!OMS Rcvd\n");
         output_data_mode = OUTPUT_MODE_SILENT;
     }
     else if (0 == strcmp("#OMX", cmd_command)) // Output Mode: Example, Streaming
     {
-        PrintString("!OMX Received\r\n");
+        PrintString("!OMX Rcvd\n");
         output_data_mode = OUTPUT_MODE_EXAMPLE;
     }
     else if (0 == strcmp("#OMQ", cmd_command)) // Output Mode: Query, Single
     {
-        PrintString("!OMQ Received\r\n");
+        PrintString("!OMQ Rcvd\n");
         output_data_mode = OUTPUT_MODE_STREAM;
         send_output_data();
         output_data_mode = OUTPUT_MODE_SILENT;
     }
     else if (0 == strcmp("#LMO", cmd_command)) // Loop Mode: Open-loop
     {    
-        PrintString("!LMO Received\r\n");
+        PrintString("!LMO Rcvd\n");
         loop_mode = LOOP_MODE_OPEN;
     }
     else if (0 == strcmp("#LMC", cmd_command)) // Loop Mode: closed-loop
     {
-        PrintString("!LMC Received\r\n");
+        PrintString("!LMC Rcvd\n");
         loop_mode = LOOP_MODE_CLOSED;
     }
     else if (0 == strcmp("#CFG", cmd_command)) // Output Configuration
     {
-        PrintString("!CFG Received\r\n");
+        PrintString("!CFG Rcvd\n");
         send_const();
-        PrintString("!--- Working Coefficients ---\r\n");
-        send_coeffs(&g_coeff_set);
+        PrintString("!--- Working Coeffs ---\n");
+        send_coeffs(&g_config);
     }
     else if (0 == strcmp("#RPC", cmd_command)) // Output Configuration Currently Stored in PROM
     {
-        PrintString("!RPC Received\r\n");
+        PrintString("!RPC Rcvd\n");
         read_coefficients();
     }
     else if (0 == strcmp("#WPE", cmd_command)) // Enable Writing to PROM 
     {
-        PrintString("!WPE Received\r\n");
+        PrintString("!WPE Rcvd\n");
         write_prom_mode = WRITE_PROM_MODE_ENABLED;
     }
     else if (0 == strcmp("#WPC", cmd_command)) // Write Coefficients to PROM 
     {
-        PrintString("!WPC Received\r\n");
+        PrintString("!WPC Rcvd\n");
         if (write_prom_mode == WRITE_PROM_MODE_ENABLED)
         {
-            rtn = save_coefficients(&g_coeff_set);
+            rtn = save_configurations(&g_config);
             if (0 == rtn)
             {
-                PrintString("!Saving to Memory Successful\r\n");
+                PrintString("!WPC Success\n");
                 read_coefficients();
             }
             else
             {
-                PrintString("!ERROR Coeffs not saved\r\n");
+                PrintString("!ERROR: not saved\n");
             }
         }
         else
         {
-            PrintString("!ERROR Enable Write (WPE)\r\n");
+            PrintString("!ERROR: set WPE\n");
         }
     }
     else if (0 == strcmp("#LPC", cmd_command)) // Load Coefficients from PROM 
     {
-        PrintString("!LPC Received\r\n");
-        rtn = load_coefficients(&g_coeff_set);
+        PrintString("!LPC Rcvd\n");
+        rtn = load_configurations(&g_config);
         if (0 == rtn)
         {
-            PrintString("\r\n!--- Loaded Working Coefficients ---\r\n");
-            send_coeffs(&g_coeff_set);
+            PrintString("\n!-- Loaded Working Coeffs --\n");
+            send_coeffs(&g_config);
         }
         else
         {
-            PrintString("!ERROR Coeffs Not Loaded\r\n");
+            send_coeffs(&g_config);
+            PrintString("\n!Load ERRORS, check configs\n");
+            output_data_mode = OUTPUT_MODE_SILENT; 
         }
     }
     else if ((0 == strcmp("#UC", cmd_command)) && (NULL != cmd_arg1) && (NULL != cmd_arg2)) // Update Coefficient 
     {
         int   temp_arg1 = 0;
         float temp_arg2 = 0.0;
-        PrintString("!UC Received\r\n");
+        PrintString("!UC Rcvd\n");
 
         temp_arg1 = atoi(cmd_arg1);
         temp_arg2 = atof(cmd_arg2);
-        update_coefficient(&g_coeff_set, temp_arg1, temp_arg2);
-        sprintf(Buf,"!Updated Coeff %d=%f\r\n",temp_arg1,temp_arg2);
+        update_configuration(&g_config, temp_arg1, temp_arg2);
+        sprintf(Buf,"!Updated Coeff %d=%f\n",temp_arg1,temp_arg2);
         PrintString(Buf);
-        PrintString("\r\n!--- Working Coefficients ---\r\n");
-        send_coeffs(&g_coeff_set);
+        PrintString("\n!--- Working Coeffs ---\n");
+        send_coeffs(&g_config);
     }
     else if (0 == strcmp("#IMA", cmd_command)) // Input Mode: ARINC
     {    
-        PrintString("!IMA Received\r\n");
+        PrintString("!IMA Rcvd\n");
         input_data_mode = INPUT_MODE_ARINC;
         output_data_mode = OUTPUT_MODE_STREAM;
     }
     else if (0 == strcmp("#IMT", cmd_command)) // Input Mode: Test Pattern
     {    
-        PrintString("!IMT Received\r\n");
+        PrintString("!IMT Rcvd\n");
         reference_mode = REFERENCE_MODE_BASE;
         input_data_mode = INPUT_MODE_TP;
     }
     else if (0 == strcmp("#IMM", cmd_command)) // Input Mode: Manual
     {    
-        PrintString("!IMM Received\r\n");
+        PrintString("!IMM Rcvd\n");
         input_data_mode = INPUT_MODE_MANUAL;        
     }
     else if (0 == strcmp("#MZ", cmd_command)) // Manual Zero Position
     {    
-        PrintString("!MZ Received\r\n");
+        PrintString("!MZ Rcvd\n");
         if (INPUT_MODE_MANUAL == input_data_mode)
         {
             pitch_attitude = 0;
@@ -975,18 +999,18 @@ static void process_command(void)
         }
         else
         {
-            PrintString("!ERROR: Must Enabled Manual Mode\r\n");
+            PrintString("!ERROR: set IMM\n");
         }
     }
     else if ((0 == strcmp("#MP", cmd_command)) && (NULL != cmd_arg1)) // Manual Pitch Change
     {
         int temp_arg = 0;
-        PrintString("!MP Received\r\n");
+        PrintString("!MP Rcvd\n");
         if ((INPUT_MODE_MANUAL == input_data_mode) && (REFERENCE_MODE_INS == reference_mode))
         {
             temp_arg = atoi(cmd_arg1);
-            if ((temp_arg > g_coeff_set.pitch_in_max)) temp_arg = g_coeff_set.pitch_in_max;
-            if ((temp_arg < g_coeff_set.pitch_in_min)) temp_arg = g_coeff_set.pitch_in_min;
+            if ((temp_arg > g_config.pitch_in_max)) temp_arg = g_config.pitch_in_max;
+            if ((temp_arg < g_config.pitch_in_min)) temp_arg = g_config.pitch_in_min;
             pitch_attitude = temp_arg;       
 		}
 		else if	((INPUT_MODE_MANUAL == input_data_mode) && (REFERENCE_MODE_BASE == reference_mode))
@@ -998,18 +1022,18 @@ static void process_command(void)
         }
         else
         {
-            PrintString("!ERROR: Must Enabled Manual Mode\r\n");
+            PrintString("!ERROR: set IMM\n");
         }
     }
     else if ((0 == strcmp("#MR", cmd_command)) && (NULL != cmd_arg1)) // Manual Roll Change
     {
         int temp_arg = 0;
-        PrintString("!MR Received\r\n");
+        PrintString("!MR Rcvd\n");
         if ((INPUT_MODE_MANUAL == input_data_mode) && (REFERENCE_MODE_INS == reference_mode))
         {
             temp_arg = atoi(cmd_arg1);
-            if ((temp_arg > g_coeff_set.roll_in_max)) temp_arg = g_coeff_set.roll_in_max;
-            if ((temp_arg < g_coeff_set.roll_in_min)) temp_arg = g_coeff_set.roll_in_min;
+            if ((temp_arg > g_config.roll_in_max)) temp_arg = g_config.roll_in_max;
+            if ((temp_arg < g_config.roll_in_min)) temp_arg = g_config.roll_in_min;
             roll_attitude = temp_arg;
         }
 		else if	((INPUT_MODE_MANUAL == input_data_mode) && (REFERENCE_MODE_BASE == reference_mode))
@@ -1021,17 +1045,17 @@ static void process_command(void)
         }
         else
         {
-            PrintString("!ERROR: Must Enabled Manual Mode\r\n");
+            PrintString("!ERROR: set IMM\n");
         }
     }
     else if (0 == strcmp("#RMI", cmd_command))  // Reference Mode: INS
     {    
-        PrintString("!RMI Received\r\n");
+        PrintString("!RMI Rcvd\n");
         reference_mode = REFERENCE_MODE_INS;
     }
     else if (0 == strcmp("#RMB", cmd_command)) // Reference Mode: Base
     {    
-        PrintString("!RMB Received\r\n");
+        PrintString("!RMB Rcvd\n");
         reference_mode = REFERENCE_MODE_BASE;
     }
     else
@@ -1048,33 +1072,26 @@ static void process_command(void)
  */
  void send_const(void)
 {
-    sprintf(Buf,"!Firmware Revision: %d\r\n",FW_REV);  
+    sprintf(Buf,"!FW Rev: %d\n",FW_REV);  
     PrintString(Buf);
-    if (PLATFORM == TOP)
-        PrintString("!Platform: TOP\r\n");
-    else if (PLATFORM == BOTTOM)
-        PrintString("!Platform: BOTTOM\r\n");
+    if (TOP == g_config.platform_type)
+        PrintString("!Platform: TOP\n");
+    else if (BOTTOM == g_config.platform_type)
+        PrintString("!Platform: BOTTOM\n");
     else
-        PrintString("!Platform: UNKNOWN\r\n");
+        PrintString("!Platform: UNKNOWN\n");
 
-    sprintf(Buf,"!Input Data Mode: %d\r\n",input_data_mode);  
-    PrintString(Buf);
-    sprintf(Buf,"!Output Data Mode: %d\r\n",output_data_mode);  
-    PrintString(Buf);
-    sprintf(Buf,"!Reference Mode: %d\r\n",reference_mode);  
+    sprintf(Buf,"!Input Mode: %d\n!Output Mode: %d\n!Ref Mode: %d\n",
+               input_data_mode,output_data_mode,reference_mode);  
     PrintString(Buf);
 
-    sprintf(Buf,"!Loop Mode: %d\r\n",loop_mode);  
+    sprintf(Buf,"!Loop Mode: %d\n!Loop K Gain: %f\n!Loop TC: %d\n",loop_mode,LOOP_K,LOOP_TC);  
     PrintString(Buf);
-    sprintf(Buf,"!Loop K Gain: %f\r\n",LOOP_K);
+    sprintf(Buf,"!PWM Quant: %d\n",PWM_QUANT);
     PrintString(Buf);
-    sprintf(Buf,"!Loop TC: %d\r\n",LOOP_TC);
+    sprintf(Buf,"!FB Averages: %d\n",FB_AVE);
     PrintString(Buf);
-    sprintf(Buf,"!PWM Quant: %d\r\n",PWM_QUANT);
-    PrintString(Buf);
-    sprintf(Buf,"!FB Averages: %d\r\n",FB_AVE);
-    PrintString(Buf);
-    sprintf(Buf,"!Gain Adjust: %f\r\n",GAIN_ADJ);
+    sprintf(Buf,"!Gain Adj: %f\n",GAIN_ADJ);
     PrintString(Buf);
 
     return;
@@ -1083,127 +1100,132 @@ static void process_command(void)
 
 /* -------------------------------------------------------------- 
    send_const()
-   param p_coeff_set: pointer to a coefficient set
+   param p_config: pointer to a coefficient set
    - Output control loop configurable variables on the serial interface
    -------------------------------------------------------------- 
  */
- void send_coeffs(coeff_set_t * p_coeff_set)
+ void send_coeffs(plat_config_t * p_config)
 {
-    sprintf(Buf,"!Pitch Translation: %f\r\n",p_coeff_set->pitch_bi_translation);
+    sprintf(Buf,"!Pitch Translation: %f\n",p_config->pitch_bi_translation);
     PrintString(Buf);
-    sprintf(Buf,"!Pitch PWM Min: %d\r\n",p_coeff_set->pitch_pwm_min);
+    sprintf(Buf,"!Pitch PWM Min: %d\n",p_config->pitch_pwm_min);
     PrintString(Buf);
-    sprintf(Buf,"!Pitch PWM Max: %d\r\n",p_coeff_set->pitch_pwm_max);
+    sprintf(Buf,"!Pitch PWM Max: %d\n",p_config->pitch_pwm_max);
     PrintString(Buf);
-    sprintf(Buf,"!Pitch PWM Gain: %f\r\n",p_coeff_set->pitch_pwm_gain);
+    sprintf(Buf,"!Pitch PWM Gain: %f\n",p_config->pitch_pwm_gain);
     PrintString(Buf);
-    sprintf(Buf,"!Pitch PWM Offset: %d\r\n",p_coeff_set->pitch_pwm_offset);
+    sprintf(Buf,"!Pitch PWM Offset: %d\n",p_config->pitch_pwm_offset);
     PrintString(Buf);
-    sprintf(Buf,"!Pitch FB Gain: %f\r\n",p_coeff_set->pitch_fb_gain);
+    sprintf(Buf,"!Pitch FB Gain: %f\n",p_config->pitch_fb_gain);
     PrintString(Buf);
-    sprintf(Buf,"!Pitch FB Offset: %f\r\n",p_coeff_set->pitch_fb_offset);
+    sprintf(Buf,"!Pitch FB Offset: %f\n",p_config->pitch_fb_offset);
     PrintString(Buf);
 
-    sprintf(Buf,"!Roll Translation: %f\r\n",p_coeff_set->roll_bi_translation);
+    sprintf(Buf,"!Roll Translation: %f\n",p_config->roll_bi_translation);
     PrintString(Buf);
-    sprintf(Buf,"!Roll PWM Min: %d\r\n",p_coeff_set->roll_pwm_min);
+    sprintf(Buf,"!Roll PWM Min: %d\n",p_config->roll_pwm_min);
     PrintString(Buf);
-    sprintf(Buf,"!Roll PWM Max: %d\r\n",p_coeff_set->roll_pwm_max);
+    sprintf(Buf,"!Roll PWM Max: %d\n",p_config->roll_pwm_max);
     PrintString(Buf);
-    sprintf(Buf,"!Roll PWM Gain: %f\r\n",p_coeff_set->roll_pwm_gain);
+    sprintf(Buf,"!Roll PWM Gain: %f\n",p_config->roll_pwm_gain);
     PrintString(Buf);
-    sprintf(Buf,"!Roll PWM Offset: %d\r\n",p_coeff_set->roll_pwm_offset);
+    sprintf(Buf,"!Roll PWM Offset: %d\n",p_config->roll_pwm_offset);
     PrintString(Buf);
-    sprintf(Buf,"!Roll FB Gain: %f\r\n",p_coeff_set->roll_fb_gain);
+    sprintf(Buf,"!Roll FB Gain: %f\n",p_config->roll_fb_gain);
     PrintString(Buf);
-    sprintf(Buf,"!Roll FB Offset: %f\r\n",p_coeff_set->roll_fb_offset);
+    sprintf(Buf,"!Roll FB Offset: %f\n",p_config->roll_fb_offset);
     PrintString(Buf);
     return;
 }
 // end send_coeffs() ---------------------------------------
 
 /* -------------------------------------------------------------- 
-   update_coefficient()
+   update_configuration()
    - Update a coefficient of a set, given the coefficient index and desired value
    - Changing _bi_translation also requires updating _in_min and _in_max
    -------------------------------------------------------------- 
  */
- void update_coefficient(coeff_set_t * p_coeff_set, unsigned int coeff_index, float value)
+ void update_configuration(plat_config_t * p_config, unsigned int config_index, float value)
 {
-    switch (coeff_index)
+    switch (config_index)
     {
         case (0):
-            p_coeff_set->pitch_bi_translation = value;
-            p_coeff_set->pitch_in_min = (float) (PITCH_IN_BASE_MIN - p_coeff_set->pitch_bi_translation);
-            p_coeff_set->pitch_in_max = (float) (PITCH_IN_BASE_MAX - p_coeff_set->pitch_bi_translation);
+            p_config->pitch_bi_translation = value;
+            p_config->pitch_in_min = (float) (PITCH_IN_BASE_MIN - p_config->pitch_bi_translation);
+            p_config->pitch_in_max = (float) (PITCH_IN_BASE_MAX - p_config->pitch_bi_translation);
         break;
 
         case (1):
-            p_coeff_set->pitch_pwm_min = (unsigned int) floor(fabs(value));
+            p_config->pitch_pwm_min = (unsigned int) floor(fabsf(value));
         break;
 
         case (2):
-            p_coeff_set->pitch_pwm_max = (unsigned int) floor(fabs(value));
+            p_config->pitch_pwm_max = (unsigned int) floor(fabsf(value));
         break;
 
         case (3):
-            p_coeff_set->pitch_pwm_gain = (float) fabs(value);
+            p_config->pitch_pwm_gain = (float) fabsf(value);
         break;
 
         case (4):
-            p_coeff_set->pitch_pwm_offset = (unsigned int) floor(fabs(value));
+            p_config->pitch_pwm_offset = (unsigned int) floor(fabsf(value));
         break;
 
         case (5):
-            p_coeff_set->pitch_fb_gain = (float) fabsf(value);
+            p_config->pitch_fb_gain = (float) fabsf(value);
         break;
 
         case (6):
-            p_coeff_set->pitch_fb_offset = (float) fabsf(value);
+            p_config->pitch_fb_offset = (float) fabsf(value);
         break;
 
         case (7):
-            p_coeff_set->roll_bi_translation = value;
-            p_coeff_set->roll_in_min = (float) (ROLL_IN_BASE_MIN - p_coeff_set->roll_bi_translation);
-            p_coeff_set->roll_in_max = (float) (ROLL_IN_BASE_MAX - p_coeff_set->roll_bi_translation);
+            p_config->roll_bi_translation = value;
+            p_config->roll_in_min = (float) (ROLL_IN_BASE_MIN - p_config->roll_bi_translation);
+            p_config->roll_in_max = (float) (ROLL_IN_BASE_MAX - p_config->roll_bi_translation);
         break;
 
         case (8):
-            p_coeff_set->roll_pwm_min = (unsigned int) floor(fabsf(value));
+            p_config->roll_pwm_min = (unsigned int) floor(fabsf(value));
         break;
 
         case (9):
-            p_coeff_set->roll_pwm_max = (unsigned int) floor(fabsf(value));
+            p_config->roll_pwm_max = (unsigned int) floor(fabsf(value));
         break;
 
         case (10):
-            p_coeff_set->roll_pwm_gain = (float) fabsf(value);
+            p_config->roll_pwm_gain = (float) fabsf(value);
         break;
 
         case (11):
-            p_coeff_set->roll_pwm_offset = (unsigned int) floor(fabsf(value));
+            p_config->roll_pwm_offset = (unsigned int) floor(fabsf(value));
         break;
 
         case (12):
-            p_coeff_set->roll_fb_gain = (float) fabsf(value);
+            p_config->roll_fb_gain = (float) fabsf(value);
         break;
 
         case (13):
-            p_coeff_set->roll_fb_offset = (float) fabsf(value);
+            p_config->roll_fb_offset = (float) fabsf(value);
         break;
+
+        case (14):
+            p_config->platform_type = (unsigned short) floor(fabsf(value));
+        break;
+
         default:
         break;
     }
     return;
 }
-// end update_coefficient() ---------------------------------------
+// end update_configuration() ---------------------------------------
 
 /* -------------------------------------------------------------- 
-   save_coefficients()
+   save_configurations()
    - Utilizes in-application programming (IAP) to update PROM memory
    - See LP2129 User's Manual for details of IAP commands
    - IAP PROM write must target a particular sector. For LP2129 (256kB size),
-       sector COEFF_SAVE_SECTOR is used to avoid program memory and boot sectors
+       sector CONFIG_SAVE_SECTOR is used to avoid program memory and boot sectors
    - PROM blocks must be written in 512 Byte Blocks. Copy coeff set over to a
        512Byte temp block to perform IAP memory write.
    - Interrupts must be disabled during IAP access
@@ -1213,7 +1235,7 @@ static void process_command(void)
        making multiple successive IAP write commands
    --------------------------------------------------------------
  */
- int save_coefficients(coeff_set_t * p_coeff_set)
+ int save_configurations(plat_config_t * p_config)
 {
     volatile unsigned long VICIntEnable_state;
     unsigned long command[5];        // Worst case command size is 5
@@ -1221,7 +1243,7 @@ static void process_command(void)
     unsigned char mem_temp[512];     // Temporary RAM memory for writing to PROM with correct size
 
     /* Transfer coefficient set to temp 512Byte block */
-    memcpy((void *) &(mem_temp[0]), (void *) p_coeff_set, sizeof(*p_coeff_set));
+    memcpy((void *) &(mem_temp[0]), (void *) p_config, sizeof(*p_config));
 
     /* Disable Interrupts */
     VICIntEnable_state = VICIntEnable; // save VIC enable state
@@ -1229,53 +1251,53 @@ static void process_command(void)
 
     /* Prep Flash for write (IAP) */
     command[0] = 50; // Prep sector for write command
-    command[1] = COEFF_SAVE_SECTOR; // Start Sector Number
-    command[2] = COEFF_SAVE_SECTOR; // End Sector Number
+    command[1] = CONFIG_SAVE_SECTOR; // Start Sector Number
+    command[2] = CONFIG_SAVE_SECTOR; // End Sector Number
         // command[3:4] ignored in this case
     IAP_entry(command, result);
     if (result[0] != 0) {
-        PrintString("!ERROR Prep Mem Failed\r\n");
+        PrintString("!ERROR PrepMem Failed\n");
     }
 
     /* Erase Sector (IAP) */
     // Note: Writing to Memory without erasing first produces strange results for successive writes
     command[0] = 52;                // Erase Sector command
-    command[1] = COEFF_SAVE_SECTOR; // Start Sector Number
-    command[2] = COEFF_SAVE_SECTOR; // End Sector Number
+    command[1] = CONFIG_SAVE_SECTOR; // Start Sector Number
+    command[2] = CONFIG_SAVE_SECTOR; // End Sector Number
     command[3] = 60000;             // System clock frequency in kHz, 60MHz (Assuming 12MHz XO and 5x PLL multiplier)
     IAP_entry(command, result);    
     if (result[0] != 0) {
-        PrintString("!ERROR Erase Sector Failed\r\n");
+        PrintString("!ERROR Erase Failed\n");
     }
 
     /* Blank Check Sector (IAP) */
     command[0] = 53;                // Erase Sector command
-    command[1] = COEFF_SAVE_SECTOR; // Start Sector Number
-    command[2] = COEFF_SAVE_SECTOR; // End Sector Number
+    command[1] = CONFIG_SAVE_SECTOR; // Start Sector Number
+    command[2] = CONFIG_SAVE_SECTOR; // End Sector Number
     IAP_entry(command, result);
     if (result[0] != 0) {
-        PrintString("!ERROR Blank Sector Check Failed\r\n");
+        PrintString("!ERROR Check Failed\n");
     }
 
     /* Prep Flash for write (IAP) */
     command[0] = 50; // Prep sector for write command
-    command[1] = COEFF_SAVE_SECTOR; // Start Sector Number
-    command[2] = COEFF_SAVE_SECTOR; // End Sector Number
+    command[1] = CONFIG_SAVE_SECTOR; // Start Sector Number
+    command[2] = CONFIG_SAVE_SECTOR; // End Sector Number
         // command[3:4] ignored in this case
     IAP_entry(command, result);
     if (result[0] != 0) {
-        PrintString("!ERROR Prep Mem Failed\r\n");
+        PrintString("!ERROR PrepMem Failed\n");
     }
     
     /* Write Flash (IAP) */
     command[0] = 51;                              // Copy RAM to Flash command
-    command[1] = (unsigned long) COEFF_SAVE_ADDR; // Destimation Flash Address
+    command[1] = (unsigned long) CONFIG_SAVE_ADDR; // Destimation Flash Address
     command[2] = (unsigned long) &(mem_temp[0]);  // Source RAM Address
     command[3] = sizeof(mem_temp);                // Number of Bytes to write
     command[4] = 60000;                           // System clock frequency in kHz, 60MHz (Assuming 12MHz XO and 5x PLL multiplier)
     IAP_entry(command, result);    
     if (result[0] != 0) {
-        PrintString("!ERROR Write Mem Failed\r\n");
+        PrintString("!ERROR Write Failed\n");
     }
     
     /* Enable Interrupts */
@@ -1283,112 +1305,140 @@ static void process_command(void)
         
     return result[0];  // return the IAP write result, should be =0 for CMD_SUCCESS
 }
-// end save_coefficients() ---------------------------------------
+// end save_configurations() ---------------------------------------
 
 /* -------------------------------------------------------------- 
-   load_coefficients()
+   load_configurations()
    - Recall coefficient set from PROM memory and load into the working set
    - Check the values in memory. If a value deviates too far from its default value
        then consider data corrupt and do not load. Meant to avoid potential damage to hardware
    --------------------------------------------------------------
  */
- int load_coefficients(coeff_set_t * p_coeff_set)
+ int load_configurations(plat_config_t * p_config)
 {
-    coeff_set_t coeff_set_temp;
+    plat_config_t config_temp;
     int rtn = 0;
-    
-    // Get the full coeff set from FLASH memory
-    memcpy((void *) &coeff_set_temp, (void *) COEFF_SAVE_ADDR, sizeof(coeff_set_temp));
 
-    PrintString("\r\n!--- Coefficients Read from Memory ---\r\n");
-    send_coeffs(&coeff_set_temp);
+    // Get the full coeff set from FLASH memory
+    memcpy((void *) &config_temp, (void *) CONFIG_SAVE_ADDR, sizeof(config_temp));
+
+    read_coefficients();
 
     // Check the deviation in stored memory relative to expected values
     //   If deviation is too great, then do not load coefficients
     //   Must check to prevent unpredictable behavior in the event of corrupted coefficients
-    if ((coeff_set_temp.pitch_bi_translation < -5.0) || (coeff_set_temp.pitch_bi_translation > 5.0)) {
-        PrintString("!Bad PITCH_BI_TRANSLATION\r\n");
+    if ((config_temp.pitch_bi_translation < -4.0) || (config_temp.pitch_bi_translation > 0.0)) {
+        PrintString("!Bad PITCH_BI_TRANSLATION\n");		
+        config_temp.pitch_bi_translation = 0.0;
         rtn = -1;
     }
-    else if ((coeff_set_temp.pitch_pwm_min < PITCH_PWM_MIN - 200) || (coeff_set_temp.pitch_pwm_min > PITCH_PWM_MIN + 200)) {
-        PrintString("!Bad PITCH_PWM_MIN\r\n");
+    if ((config_temp.pitch_pwm_min < PITCH_PWM_MIN - 1000) || (config_temp.pitch_pwm_min > PITCH_PWM_MIN + 1000)) {
+        PrintString("!Bad PITCH_PWM_MIN\n");
+        config_temp.pitch_pwm_min = PITCH_PWM_MIN;
         rtn = -1;
     }
-    else if ((coeff_set_temp.pitch_pwm_max < PITCH_PWM_MAX - 200) || (coeff_set_temp.pitch_pwm_max > PITCH_PWM_MAX + 200)) {
-        PrintString("!Bad PITCH_PWM_MAX\r\n");
+    if ((config_temp.pitch_pwm_max < PITCH_PWM_MAX - 1000) || (config_temp.pitch_pwm_max > PITCH_PWM_MAX + 1000)) {
+        PrintString("!Bad PITCH_PWM_MAX\n");
+        config_temp.pitch_pwm_max = PITCH_PWM_MAX;
         rtn = -1;
     }
-    else if ((coeff_set_temp.pitch_pwm_gain < PITCH_PWM_GAIN/2) || (coeff_set_temp.pitch_pwm_gain > PITCH_PWM_GAIN*2)) {
-        PrintString("!Bad PITCH_PWM_GAIN\r\n");
+    if ((config_temp.pitch_pwm_gain < PITCH_PWM_GAIN/3.0) || (config_temp.pitch_pwm_gain > PITCH_PWM_GAIN*3.0)) {
+        PrintString("!Bad PITCH_PWM_GAIN\n");
+        config_temp.pitch_pwm_gain = PITCH_PWM_GAIN;
         rtn = -1;
     }
-    else if ((coeff_set_temp.pitch_pwm_offset < PITCH_PWM_OFFSET - 500) || (coeff_set_temp.pitch_pwm_offset > PITCH_PWM_OFFSET + 500)) {
-        PrintString("!Bad PITCH_PWM_OFFSET\r\n");
+    if ((config_temp.pitch_pwm_offset < PITCH_PWM_OFFSET - 500) || (config_temp.pitch_pwm_offset > PITCH_PWM_OFFSET + 500)) {
+        PrintString("!Bad PITCH_PWM_OFFSET\n");
+        config_temp.pitch_pwm_offset = PITCH_PWM_OFFSET;
         rtn = -1;
     }
-    else if ((coeff_set_temp.pitch_fb_gain < PITCH_FB_GAIN/2.0) || (coeff_set_temp.pitch_fb_gain > PITCH_FB_GAIN*2.0)) {
-        PrintString("!Bad PITCH_FB_GAIN\r\n");
+    if ((config_temp.pitch_fb_gain < PITCH_FB_GAIN/3.0) || (config_temp.pitch_fb_gain > PITCH_FB_GAIN*3.0)) {
+        PrintString("!Bad PITCH_FB_GAIN\n");
+        config_temp.pitch_fb_gain = PITCH_FB_GAIN;
         rtn = -1;
     }
-    else if ((coeff_set_temp.pitch_fb_offset < PITCH_FB_OFFSET - 50.0) || (coeff_set_temp.pitch_fb_offset > PITCH_FB_OFFSET + 50.0)) {
-        PrintString("!Bad PITCH_FB_OFFSET\r\n");
+    if ((config_temp.pitch_fb_offset < 50) || (config_temp.pitch_fb_offset > 500)) {
+        PrintString("!Bad PITCH_FB_OFFSET\n");
+        config_temp.pitch_fb_offset = 200;
         rtn = -1;
     }
-    else if ((coeff_set_temp.roll_bi_translation < -5.0) || (coeff_set_temp.roll_bi_translation > 5.0)) {
-        PrintString("!Bad ROLL_BI_TRANSLATION\r\n");
+    if ((config_temp.roll_bi_translation < -2.0) || (config_temp.roll_bi_translation > 2.0)) {
+        PrintString("!Bad ROLL_BI_TRANSLATION\n");
+        config_temp.roll_bi_translation = 0.0;
         rtn = -1;
     }
-    else if ((coeff_set_temp.roll_pwm_min < ROLL_PWM_MIN - 200) || (coeff_set_temp.roll_pwm_min > ROLL_PWM_MIN + 200)) {
-        PrintString("!Bad ROLL_PWM_MIN\r\n");
+    if ((config_temp.roll_pwm_min < ROLL_PWM_MIN - 1000) || (config_temp.roll_pwm_min > ROLL_PWM_MIN + 1000)) {
+        PrintString("!Bad ROLL_PWM_MIN\n");
+        config_temp.roll_pwm_min = ROLL_PWM_MIN;
         rtn = -1;
     }
-    else if ((coeff_set_temp.roll_pwm_max < ROLL_PWM_MAX - 200) || (coeff_set_temp.roll_pwm_max > ROLL_PWM_MAX + 200)) {
-        PrintString("!Bad ROLL_PWM_MAX\r\n");
+    if ((config_temp.roll_pwm_max < ROLL_PWM_MAX - 1000) || (config_temp.roll_pwm_max > ROLL_PWM_MAX + 1000)) {
+        PrintString("!Bad ROLL_PWM_MAX\n");
+        config_temp.roll_pwm_max = ROLL_PWM_MAX;
         rtn = -1;
     }
-    else if ((coeff_set_temp.roll_pwm_gain < ROLL_PWM_GAIN/2.0) || (coeff_set_temp.roll_pwm_gain > ROLL_PWM_GAIN*2.0)) {
-        PrintString("!Bad ROLL_PWM_GAIN\r\n");
+    if ((config_temp.roll_pwm_gain < ROLL_PWM_GAIN/3.0) || (config_temp.roll_pwm_gain > ROLL_PWM_GAIN*3.0)) {
+        PrintString("!Bad ROLL_PWM_GAIN\n");
+        config_temp.roll_pwm_gain = ROLL_PWM_GAIN;
         rtn = -1;
     }
-    else if ((coeff_set_temp.roll_pwm_offset < ROLL_PWM_OFFSET - 500) || (coeff_set_temp.roll_pwm_offset > ROLL_PWM_OFFSET + 500)) {
-        PrintString("!Bad ROLL_PWM_OFFSET\r\n");
+    if ((config_temp.roll_pwm_offset < ROLL_PWM_OFFSET - 500) || (config_temp.roll_pwm_offset > ROLL_PWM_OFFSET + 500)) {
+        PrintString("!Bad ROLL_PWM_OFFSET\n");
+        config_temp.roll_pwm_offset = ROLL_PWM_OFFSET;
         rtn = -1;
     }
-    else if ((coeff_set_temp.roll_fb_gain < ROLL_FB_GAIN/2.0) || (coeff_set_temp.roll_fb_gain > ROLL_FB_GAIN*2.0)) {
-        PrintString("!Bad ROLL_FB_GAIN\r\n");
+    if ((config_temp.roll_fb_gain < ROLL_FB_GAIN/4.0) || (config_temp.roll_fb_gain > ROLL_FB_GAIN*4.0)) {
+        PrintString("!Bad ROLL_FB_GAIN\n");
+        config_temp.roll_fb_gain = ROLL_FB_GAIN;
         rtn = -1;
     }
-    else if ((coeff_set_temp.roll_fb_offset < ROLL_FB_OFFSET - 50.0) || (coeff_set_temp.roll_fb_offset > ROLL_FB_OFFSET + 50.0)) {
-        PrintString("!Bad ROLL_FB_OFFSET\r\n");
+    if ((config_temp.roll_fb_offset < 50) || (config_temp.roll_fb_offset > 500)) {
+        PrintString("!Bad ROLL_FB_OFFSET\n");
+        config_temp.roll_fb_offset = 200;
         rtn = -1;
     }
-    else if ((coeff_set_temp.pitch_in_min < PITCH_IN_MIN - 2.0) || (coeff_set_temp.pitch_in_min > PITCH_IN_MIN + 2.0)) {
-        PrintString("!Bad PITCH_IN_MIN\r\n");
-        sprintf(Buf,"!%f %f\r\n",coeff_set_temp.pitch_in_min, PITCH_IN_MIN);  
+    if ((config_temp.pitch_in_min < PITCH_IN_BASE_MIN - config_temp.pitch_bi_translation - 1.0) || 
+        (config_temp.pitch_in_min > PITCH_IN_BASE_MIN - config_temp.pitch_bi_translation + 1.0)) 
+    {
+        PrintString("!Bad PITCH_IN_MIN\n");
+        sprintf(Buf,"!%f %f\n",config_temp.pitch_in_min, PITCH_IN_BASE_MIN - config_temp.pitch_bi_translation);  
         PrintString(Buf);
+        config_temp.pitch_in_min = (float) (PITCH_IN_BASE_MIN - PITCH_BI_TRANSLATION);
         rtn = -1;
     }
-    else if ((coeff_set_temp.pitch_in_max < PITCH_IN_MAX - 2.0) || (coeff_set_temp.pitch_in_max > PITCH_IN_MAX + 2.0)) {
-        PrintString("!Bad PITCH_IN_MAX\r\n");
+    if ((config_temp.pitch_in_max < PITCH_IN_BASE_MAX - config_temp.pitch_bi_translation - 1.0) || 
+        (config_temp.pitch_in_max > PITCH_IN_BASE_MAX - config_temp.pitch_bi_translation + 1.0)) 
+    {
+        PrintString("!Bad PITCH_IN_MAX\n");
+        config_temp.pitch_in_max = (float) (PITCH_IN_BASE_MAX - PITCH_BI_TRANSLATION);
         rtn = -1;
     }
-    else if ((coeff_set_temp.roll_in_min < ROLL_IN_MIN - 3.0) || (coeff_set_temp.roll_in_min > ROLL_IN_MIN + 3.0)) {
-        PrintString("!Bad ROLL_IN_MIN\r\n");
+    if ((config_temp.roll_in_min < ROLL_IN_BASE_MIN - config_temp.roll_bi_translation - 1.0) || 
+        (config_temp.roll_in_min > ROLL_IN_BASE_MIN - config_temp.roll_bi_translation + 1.0)) 
+    {
+        PrintString("!Bad ROLL_IN_MIN\n");
+        config_temp.roll_in_min = (float) (ROLL_IN_BASE_MIN - ROLL_BI_TRANSLATION);
         rtn = -1;
     }
-    else if ((coeff_set_temp.roll_in_max < ROLL_IN_MAX - 3.0) || (coeff_set_temp.roll_in_max > ROLL_IN_MAX + 3.0)) {
-        PrintString("!Bad ROLL_IN_MAX\r\n");
+    if ((config_temp.roll_in_max < ROLL_IN_BASE_MAX - config_temp.roll_bi_translation - 1.0) || 
+        (config_temp.roll_in_max > ROLL_IN_BASE_MAX - config_temp.roll_bi_translation + 1.0)) 
+    {
+        PrintString("!Bad ROLL_IN_MAX\n");
+        config_temp.roll_in_max = (float) (ROLL_IN_BASE_MAX - ROLL_BI_TRANSLATION);
         rtn = -1;
     }
-    else;
-    
+    if ((config_temp.platform_type != TOP) && (config_temp.platform_type != BOTTOM)) {
+        PrintString("!Bad PLATFORM_TYPE\n");
+        config_temp.platform_type = TOP;
+        rtn = -1;
+    }
+
     // Copy temporary coeff set over to working set
-    if (0 == rtn) {
-        memcpy((void *) p_coeff_set, (void *) &coeff_set_temp, sizeof(coeff_set_temp));
-    }
+    memcpy((void *) p_config, (void *) &config_temp, sizeof(config_temp));
+
     return rtn;
 }
-// end load_coefficients() ---------------------------------------
+// end load_configurations() ---------------------------------------
 
 
 /* ------------------------------------------------------------
@@ -1398,13 +1448,13 @@ static void process_command(void)
 */
 void read_coefficients(void)
 {
-    coeff_set_t coeff_set_temp;
+    plat_config_t config_temp;
     
     // Get the full coeff set from FLASH memory
-    memcpy((void *) &coeff_set_temp, (void *) COEFF_SAVE_ADDR, sizeof(coeff_set_temp));
+    memcpy((void *) &config_temp, (void *) CONFIG_SAVE_ADDR, sizeof(config_temp));
 
-    PrintString("\r\n!--- Coefficients in Memory ---\r\n");
-    send_coeffs(&coeff_set_temp);
+    PrintString("\n!-- Configs in Memory --\n");
+    send_coeffs(&config_temp);
 
     return;
 }
