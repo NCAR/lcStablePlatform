@@ -4,16 +4,17 @@
 #include <STRING.H>
 #include <MATH.H>
 
-#define FW_REV 20230301
+#define FW_REV 20230303
 //#define DEBUG  // Uncomment to add in debug functionality
 
 /* Platform Selection */
-#define TOP 0
-#define BOTTOM 1
+#define PLATFORM_TOP 0
+#define PLATFORM_BOTTOM 1
+#define PLATFORM_UNKNOWN 3
 
 // Platform type is no longer controlled by #define, rather, is now included in saved memory structure
 //   PLATFORM value here merely sets the starter coefficients for an unprogrammed memory.
-//#define PLATFORM  TOP   // MUST SET: TOP or BOTTOM to select appropriate coeffs
+//#define PLATFORM  PLATFORM_TOP   // MUST SET: TOP or BOTTOM to select appropriate coeffs
 
 /* Platform Coefficients */
 #define PITCH_BI_TRANSLATION 0.0 // Translates Pitch from INS ref frame to platform base ref frame
@@ -34,7 +35,7 @@
 #define ROLL_FB_GAIN       0.10  // ADC output to attitude angle feedback gain, float
 #define ROLL_FB_OFFSET    200.0  // ADC output to attitude angle feedback offset, flat to platform, float
 /*
-#if (PLATFORM == BOTTOM) // Updated 1/22/2019
+#if (PLATFORM == PLATFORM_BOTTOM) // Updated 1/22/2019
 
 #define PITCH_BI_TRANSLATION   -2.9  // Translates Pitch from INS ref frame to platform base ref frame
                                  //   Negative correction polarity corrects positive aircraft pitch
@@ -54,7 +55,7 @@
 #define ROLL_FB_GAIN     0.0555  // ADC output to attitude angle feedback gain, float
 #define ROLL_FB_OFFSET    367.9  // ADC output to attitude angle feedback offset, flat to platform, float
 
-#elif (PLATFORM == TOP) // Updated 1/22/2018
+#elif (PLATFORM == PLATFORM_TOP) // Updated 1/22/2018
 
 #define PITCH_BI_TRANSLATION -2.9  // Translates Pitch from INS ref frame to platform base ref frame
                                  //   Negative to correct positive aircraft pitch
@@ -304,8 +305,6 @@ int main (void)
     int rtn = 0;
 
     init_system();
-    PrintString("\n\n!NCAR Stabilized Platform\n");
-    send_const();
 
     /* Init Coeff Structure with Default Coefficients */
     g_config.pitch_bi_translation = (float)        PITCH_BI_TRANSLATION;
@@ -326,8 +325,10 @@ int main (void)
     g_config.pitch_in_max         = (float)        (PITCH_IN_BASE_MAX - PITCH_BI_TRANSLATION);
     g_config.roll_in_min          = (float)        (ROLL_IN_BASE_MIN  - ROLL_BI_TRANSLATION);
     g_config.roll_in_max          = (float)        (ROLL_IN_BASE_MAX  - PITCH_BI_TRANSLATION);
-    g_config.platform_type        = (unsigned short) TOP;
+    g_config.platform_type        = (unsigned short) PLATFORM_UNKNOWN;
 
+    PrintString("\n\n!NCAR Stabilized Platform\n");
+    send_const();
     PrintString("!--- Default Coeffs ---\n");
     send_coeffs(&g_config);
 
@@ -561,13 +562,17 @@ void calibration_update_loop_input(void)
 */
 void execute_control_loop_iteration(void)
 {
-    if (g_config.platform_type == TOP) // Pitch base polarity depends on platform as TOP or BOTTOM
+    if (g_config.platform_type == PLATFORM_TOP) // Pitch base polarity depends on platform as TOP or BOTTOM
     {
         pitch_base = -1.0 * (pitch_attitude + get_reference_frame_pitch_translation(reference_mode));
     }
-    else
+    else if (g_config.platform_type == PLATFORM_BOTTOM)
     {
         pitch_base = (pitch_attitude + get_reference_frame_pitch_translation(reference_mode));
+    }
+    else
+    {
+        pitch_base = 0;
     }
     roll_base = roll_attitude + get_reference_frame_roll_translation(reference_mode);
 
@@ -1064,9 +1069,9 @@ static void process_command(void)
 {
     sprintf(Buf,"!FW Rev: %d\n",FW_REV);  
     PrintString(Buf);
-    if (TOP == g_config.platform_type)
+    if (PLATFORM_TOP == g_config.platform_type)
         PrintString("!Platform: TOP\n");
-    else if (BOTTOM == g_config.platform_type)
+    else if (PLATFORM_BOTTOM == g_config.platform_type)
         PrintString("!Platform: BOTTOM\n");
     else
         PrintString("!Platform: UNKNOWN\n");
@@ -1417,9 +1422,9 @@ static void process_command(void)
         config_temp.roll_in_max = (float) (ROLL_IN_BASE_MAX - ROLL_BI_TRANSLATION);
         rtn = -1;
     }
-    if ((config_temp.platform_type != TOP) && (config_temp.platform_type != BOTTOM)) {
+    if ((config_temp.platform_type != PLATFORM_TOP) && (config_temp.platform_type != PLATFORM_BOTTOM)) {
         PrintString("!Bad PLATFORM_TYPE\n");
-        config_temp.platform_type = TOP;
+        config_temp.platform_type = PLATFORM_UNKNOWN;
         rtn = -1;
     }
 
