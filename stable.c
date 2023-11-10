@@ -4,7 +4,7 @@
 #include <STRING.H>
 #include <MATH.H>
 
-#define FW_REV 20230303
+#define FW_REV 20231110
 //#define DEBUG  // Uncomment to add in debug functionality
 
 /* Platform Selection */
@@ -103,6 +103,12 @@
                                  //   This value must be 0x300 or below (corresponding to 2.48V) due to sense diode drop
                                  //   Empirical observation shows this value less than 0x200, (1.64V, I_motor~150mA)
 
+/* Control Limits Flags */
+#define LIMIT_PITCH_INPUT ((unsigned char) 0x01)
+#define LIMIT_ROLL_INPUT  ((unsigned char) 0x02)
+#define LIMIT_PITCH_PWM   ((unsigned char) 0x04)
+#define LIMIT_ROLL_PWM    ((unsigned char) 0x08)
+
 /* Operational Modes Options */
 #define INPUT_MODE_ARINC     0  // Input Data Modes
 #define INPUT_MODE_MANUAL    1
@@ -176,6 +182,8 @@ typedef struct platform_config_struct
 
 /* Function Prototypes */
 void execute_control_loop_iteration(void);
+void limit_pwm(void);
+void limit_input(void);
 void read_arinc_update_loop_input(void);
 void test_pattern_update_loop_input(void);
 void calibration_update_loop_input(void);
@@ -285,6 +293,8 @@ float roll_posFilter;
 unsigned short roll_decCntr;
 float roll_loopFB;
 
+unsigned char limit_flags;
+
 /* In-Application Programming (IAP) Entry Function */
 typedef void (*IAP)(unsigned long [],unsigned long []);
 IAP IAP_entry = (IAP) IAP_LOCATION;
@@ -346,6 +356,10 @@ int main (void)
         PrintString("\n!Load ERRORS, check configs\n");
         output_data_mode = OUTPUT_MODE_SILENT; 
     }
+
+    /* Set initial platform attitude input to be base centered */
+    pitch_attitude = -get_reference_frame_pitch_translation(reference_mode);
+    roll_attitude  = -get_reference_frame_roll_translation(reference_mode);
   
     while (1) // Loop forever
     {
@@ -414,7 +428,6 @@ int main (void)
    read_arinc_update_loop_input()
    - Read in ARINC attitude data from the HI-3588 SPI Interface
    - Extract pitch or roll value from ARINC word
-   - Apply limits to attitude values 
    -------------------------------------------------------------- 
 */
 void read_arinc_update_loop_input(void)
@@ -459,8 +472,8 @@ void read_arinc_update_loop_input(void)
 
                 // Verify that attitude input does not exceed limits
                 pitch_attitude = attitude;
-                if (pitch_attitude > g_config.pitch_in_max) pitch_attitude = g_config.pitch_in_max;
-                if (pitch_attitude < g_config.pitch_in_min) pitch_attitude = g_config.pitch_in_min;
+                limit_input();
+
             break;
                 
             case ROLL_LABEL:
@@ -468,8 +481,7 @@ void read_arinc_update_loop_input(void)
 
                 // Verify that attitude input does not exceed limits
                 roll_attitude = attitude;
-                if (roll_attitude > g_config.roll_in_max) roll_attitude = g_config.roll_in_max;
-                if (roll_attitude < g_config.roll_in_min) roll_attitude = g_config.roll_in_min;
+                limit_input();
             break;
 
             default:
@@ -558,10 +570,12 @@ void calibration_update_loop_input(void)
      - Secondary pole is motor response time
    - PWM setting is coarsely quantized to prevent limit cycles  
    - Motor Encoder values averaged over FB_AVE samples
+   - Apply limits to attitude inputs and derived PWM values
    -------------------------------------------------------------- 
 */
 void execute_control_loop_iteration(void)
 {
+    // Calculate the platform attitude relative to the base, depending on reference mode
     if (g_config.platform_type == PLATFORM_TOP) // Pitch base polarity depends on platform as TOP or BOTTOM
     {
         pitch_base = -1.0 * (pitch_attitude + get_reference_frame_pitch_translation(reference_mode));
@@ -608,13 +622,13 @@ void execute_control_loop_iteration(void)
         // Apply gain adjustment and Saturate loop input
         pitch_loopInput =  GAIN_ADJ * pitch_base;
         if (pitch_loopInput > PITCH_IN_BASE_MAX) pitch_loopInput = PITCH_IN_BASE_MAX;
-        if (pitch_loopInput < PITCH_IN_BASE_MIN) pitch_loopInput = PITCH_IN_BASE_MIN;                                
+        if (pitch_loopInput < PITCH_IN_BASE_MIN) pitch_loopInput = PITCH_IN_BASE_MIN;
 
         roll_loopInput = GAIN_ADJ * roll_base;
         if (roll_loopInput > ROLL_IN_BASE_MAX) roll_loopInput = ROLL_IN_BASE_MAX;
         if (roll_loopInput < ROLL_IN_BASE_MIN) roll_loopInput = ROLL_IN_BASE_MIN;
 
-        // Calculate Loop Error and saturate
+        // Calculate PITCH Loop Error and saturate
         pitch_loopErrK = LOOP_K*(pitch_loopInput - pitch_loopFB);
         if (pitch_loopErrK > PITCH_LOOPERRK_MAX) pitch_loopErrK = PITCH_LOOPERRK_MAX;
         if (pitch_loopErrK < PITCH_LOOPERRK_MIN) pitch_loopErrK = PITCH_LOOPERRK_MIN;
@@ -626,11 +640,9 @@ void execute_control_loop_iteration(void)
 
         // Convert Loop Error to PWM conversion factors, quantize, and limit
         pitch_pwm = (short) (pitch_loopErrK_filt * g_config.pitch_pwm_gain + g_config.pitch_pwm_offset);
-        if (pitch_pwm > g_config.pitch_pwm_max) pitch_pwm = (short) g_config.pitch_pwm_max;
-        if (pitch_pwm < g_config.pitch_pwm_min) pitch_pwm = (short) g_config.pitch_pwm_min;
-        pitch_pwm = (pitch_pwm >> PWM_QUANT) << PWM_QUANT; // Truncate bits
 
-        // Calculate Loop Error and saturate
+
+        // Calculate ROLL Loop Error and saturate
         roll_loopErrK = LOOP_K*(roll_loopInput - roll_loopFB);
         if (roll_loopErrK > ROLL_LOOPERRK_MAX) roll_loopErrK = ROLL_LOOPERRK_MAX;
         if (roll_loopErrK < ROLL_LOOPERRK_MIN) roll_loopErrK = ROLL_LOOPERRK_MIN;
@@ -642,20 +654,21 @@ void execute_control_loop_iteration(void)
 
         // Convert Loop Error to PWM conversion factors, quantize, and limit
         roll_pwm = (short) (roll_loopErrK_filt * g_config.roll_pwm_gain + g_config.roll_pwm_offset);
-        if (roll_pwm > g_config.roll_pwm_max) roll_pwm = (short) g_config.roll_pwm_max;
-        if (roll_pwm < g_config.roll_pwm_min) roll_pwm = (short) g_config.roll_pwm_min;
-        roll_pwm = (roll_pwm >> PWM_QUANT) << PWM_QUANT; // Truncate bits
+
+        // Limit and Truncate PWM values (to eliminate noise)
+        limit_pwm();
+        pitch_pwm = (pitch_pwm >> PWM_QUANT) << PWM_QUANT; // Truncate bits
+        roll_pwm  = (roll_pwm  >> PWM_QUANT) << PWM_QUANT; // Truncate bits
 
     }
     else if (LOOP_MODE_OPEN == loop_mode)
     {
+        // Convert attitude to motor PWM
         pitch_pwm = (short)(pitch_base * g_config.pitch_pwm_gain + g_config.pitch_pwm_offset);
-        if (pitch_pwm > g_config.pitch_pwm_max) pitch_pwm = g_config.pitch_pwm_max;
-        if (pitch_pwm < g_config.pitch_pwm_min) pitch_pwm = g_config.pitch_pwm_min;
+        roll_pwm =  (short)(roll_base  * g_config.roll_pwm_gain  + g_config.roll_pwm_offset);
 
-        roll_pwm =  (short)(roll_base * g_config.roll_pwm_gain + g_config.roll_pwm_offset);
-        if (roll_pwm > g_config.roll_pwm_max) roll_pwm = g_config.roll_pwm_max;
-        if (roll_pwm < g_config.roll_pwm_min) roll_pwm = g_config.roll_pwm_min;
+        // Apply limits
+        limit_pwm();        
     }
     else
     {}
@@ -675,6 +688,112 @@ void execute_control_loop_iteration(void)
 // end execute_control_loop_iteration() ------------------------------------------------------------
 
 /* ------------------------------------------------------------
+   limit_input()
+   - Limit the Input Attitude values and determine the limit flags states
+   - Applying limits to input values inherently limits the position relative to Base.
+       Applying limit to inputs (instead of applying limits at base reference) is preferred
+       because it allows pitch_attitude to stay consistent with pitch_base when limit is applied
+       for both the TOP and BOTTOM configurations.
+   -------------------------------------------------------------- 
+*/
+void limit_input(void)
+{
+
+    limit_flags = ~((~limit_flags) | LIMIT_PITCH_INPUT | LIMIT_ROLL_INPUT); // Clear Input limit flags
+
+    if (REFERENCE_MODE_INS == reference_mode)
+    {
+        if (pitch_attitude >= g_config.pitch_in_max)
+        {
+            pitch_attitude = g_config.pitch_in_max;
+            limit_flags    = limit_flags | LIMIT_PITCH_INPUT;
+        }
+        if (pitch_attitude <= g_config.pitch_in_min)
+        {
+            pitch_attitude = g_config.pitch_in_min;
+            limit_flags    = limit_flags | LIMIT_PITCH_INPUT;
+        }
+    
+        if (roll_attitude >= g_config.roll_in_max)
+        {
+            roll_attitude = g_config.roll_in_max;
+            limit_flags   = limit_flags | LIMIT_ROLL_INPUT;
+        }
+        if (roll_attitude <= g_config.roll_in_min)
+        {
+            roll_attitude = g_config.roll_in_min;
+            limit_flags   = limit_flags | LIMIT_ROLL_INPUT;
+        }
+    }
+    else if (REFERENCE_MODE_BASE == reference_mode)
+    {
+        if (pitch_attitude >= PITCH_IN_BASE_MAX)
+        {
+            pitch_attitude = PITCH_IN_BASE_MAX;
+            limit_flags    = limit_flags | LIMIT_PITCH_INPUT;
+        }
+        if (pitch_attitude <= PITCH_IN_BASE_MIN)
+        {
+            pitch_attitude = PITCH_IN_BASE_MIN;
+            limit_flags    = limit_flags | LIMIT_PITCH_INPUT;
+        }
+    
+        if (roll_attitude >= ROLL_IN_BASE_MAX)
+        {
+            roll_attitude = ROLL_IN_BASE_MAX;
+            limit_flags   = limit_flags | LIMIT_ROLL_INPUT;
+        }
+        if (roll_attitude <= ROLL_IN_BASE_MIN)
+        {
+            roll_attitude = ROLL_IN_BASE_MAX;
+            limit_flags   = limit_flags | LIMIT_ROLL_INPUT;
+        }
+    }
+    else
+    {
+        pitch_attitude = 0;
+        roll_attitude  = 0;
+    }
+
+    return;
+}
+
+/* ------------------------------------------------------------
+   limit_pwm()
+   - Limit the PWM values and determine the limit flags states
+   -------------------------------------------------------------- 
+*/
+void limit_pwm(void)
+{
+    limit_flags = ~((~limit_flags) | LIMIT_PITCH_PWM | LIMIT_ROLL_PWM); // Clear PWM limit flags   
+
+    if (pitch_pwm >= g_config.pitch_pwm_max)
+    {
+        pitch_pwm = (short) g_config.pitch_pwm_max;
+        limit_flags = limit_flags | LIMIT_PITCH_PWM;
+    }
+    if (pitch_pwm <= g_config.pitch_pwm_min)
+    {
+        pitch_pwm = (short) g_config.pitch_pwm_min;
+        limit_flags = limit_flags | LIMIT_PITCH_PWM;
+    }
+
+    if (roll_pwm >= g_config.roll_pwm_max) 
+    {
+        roll_pwm = (short) g_config.roll_pwm_max;
+        limit_flags = limit_flags | LIMIT_ROLL_PWM;
+    }
+    if (roll_pwm <= g_config.roll_pwm_min)
+    {
+        roll_pwm = (short) g_config.roll_pwm_min;
+        limit_flags = limit_flags | LIMIT_ROLL_PWM;
+    }
+
+    return;
+}
+// end limit_pwm() -----------------------------------------------------
+
+/* ------------------------------------------------------------
    send_output_data()
    - Output the sample data on serial interface, comma delimited
    - Different outputs for different output modes
@@ -684,9 +803,10 @@ void send_output_data(void)
 {
     if (OUTPUT_MODE_STREAM == output_data_mode)
     {
-        sprintf(Buf,"#%.2f,%d,%d,%.2f,%d,%.2f,%d,%d,%.2f,%d\n",  
+        sprintf(Buf,"#%.2f,%d,%d,%.2f,%d,%.2f,%d,%d,%.2f,%d,%d\n",  
                     pitch_attitude, pitch_pwm, pitch_encoder, pitch_loopFB, pitch_ovcr,
-                    roll_attitude,  roll_pwm,  roll_encoder,  roll_loopFB,  roll_ovcr);
+                    roll_attitude,  roll_pwm,  roll_encoder,  roll_loopFB,  roll_ovcr,
+                    limit_flags);
         PrintString(Buf);
 
 #ifdef DEBUG
@@ -702,7 +822,7 @@ void send_output_data(void)
     }
     else if (OUTPUT_MODE_EXAMPLE == output_data_mode)
     {
-        sprintf(Buf,"#9.99,9999,999,9.99,999,-9.99,9999,999,-9.99,999\n");
+        sprintf(Buf,"#9.99,9999,999,9.99,999,-9.99,9999,999,-9.99,999,0\n");
         PrintString(Buf);
     }
     else if (OUTPUT_MODE_SILENT == output_data_mode)
@@ -991,6 +1111,7 @@ static void process_command(void)
         {
             pitch_attitude = 0;
             roll_attitude = 0;
+            limit_input();
         }
         else
         {
@@ -1004,16 +1125,19 @@ static void process_command(void)
         if ((INPUT_MODE_MANUAL == input_data_mode) && (REFERENCE_MODE_INS == reference_mode))
         {
             temp_arg = atoi(cmd_arg1);
-            if ((temp_arg > g_config.pitch_in_max)) temp_arg = g_config.pitch_in_max;
-            if ((temp_arg < g_config.pitch_in_min)) temp_arg = g_config.pitch_in_min;
+            // Limits removed 11/9/2023, handled in execute_control_loop_iteration()
+            //if ((temp_arg > g_config.pitch_in_max)) temp_arg = g_config.pitch_in_max;
+            //if ((temp_arg < g_config.pitch_in_min)) temp_arg = g_config.pitch_in_min;
             pitch_attitude = temp_arg;       
+            limit_input();
 		}
 		else if	((INPUT_MODE_MANUAL == input_data_mode) && (REFERENCE_MODE_BASE == reference_mode))
 		{
             temp_arg = atoi(cmd_arg1);
-            if ((temp_arg > PITCH_IN_BASE_MAX)) temp_arg = PITCH_IN_BASE_MAX;
-            if ((temp_arg < PITCH_IN_BASE_MIN)) temp_arg = PITCH_IN_BASE_MIN;
+            //if ((temp_arg > PITCH_IN_BASE_MAX)) temp_arg = PITCH_IN_BASE_MAX;
+            //if ((temp_arg < PITCH_IN_BASE_MIN)) temp_arg = PITCH_IN_BASE_MIN;
             pitch_attitude = temp_arg;       
+            limit_input();
         }
         else
         {
@@ -1027,16 +1151,18 @@ static void process_command(void)
         if ((INPUT_MODE_MANUAL == input_data_mode) && (REFERENCE_MODE_INS == reference_mode))
         {
             temp_arg = atoi(cmd_arg1);
-            if ((temp_arg > g_config.roll_in_max)) temp_arg = g_config.roll_in_max;
-            if ((temp_arg < g_config.roll_in_min)) temp_arg = g_config.roll_in_min;
+            //if ((temp_arg > g_config.roll_in_max)) temp_arg = g_config.roll_in_max;
+            //if ((temp_arg < g_config.roll_in_min)) temp_arg = g_config.roll_in_min;
             roll_attitude = temp_arg;
+            limit_input();
         }
 		else if	((INPUT_MODE_MANUAL == input_data_mode) && (REFERENCE_MODE_BASE == reference_mode))
 		{
             temp_arg = atoi(cmd_arg1);
-            if ((temp_arg > ROLL_IN_BASE_MAX)) temp_arg = ROLL_IN_BASE_MAX;
-            if ((temp_arg < ROLL_IN_BASE_MIN)) temp_arg = ROLL_IN_BASE_MIN;
+            //if ((temp_arg > ROLL_IN_BASE_MAX)) temp_arg = ROLL_IN_BASE_MAX;
+            //if ((temp_arg < ROLL_IN_BASE_MIN)) temp_arg = ROLL_IN_BASE_MIN;
             roll_attitude = temp_arg;
+            limit_input();
         }
         else
         {
@@ -1047,11 +1173,13 @@ static void process_command(void)
     {    
         PrintString("!RMI Rcvd\n");
         reference_mode = REFERENCE_MODE_INS;
+        limit_input();
     }
     else if (0 == strcmp("#RMB", cmd_command)) // Reference Mode: Base
     {    
         PrintString("!RMB Rcvd\n");
         reference_mode = REFERENCE_MODE_BASE;
+        limit_input();
     }
     else
     {}
@@ -1322,7 +1450,7 @@ static void process_command(void)
     // Check the deviation in stored memory relative to expected values
     //   If deviation is too great, then do not load coefficients
     //   Must check to prevent unpredictable behavior in the event of corrupted coefficients
-    if ((config_temp.pitch_bi_translation < -4.0) || (config_temp.pitch_bi_translation > 0.0)) {
+    if ((config_temp.pitch_bi_translation < -7.0) || (config_temp.pitch_bi_translation > 0.0)) {
         PrintString("!Bad PITCH_BI_TRANSLATION\n");		
         config_temp.pitch_bi_translation = 0.0;
         rtn = -1;
@@ -1357,7 +1485,7 @@ static void process_command(void)
         config_temp.pitch_fb_offset = 200;
         rtn = -1;
     }
-    if ((config_temp.roll_bi_translation < -2.0) || (config_temp.roll_bi_translation > 2.0)) {
+    if ((config_temp.roll_bi_translation < -5.0) || (config_temp.roll_bi_translation > 5.0)) {
         PrintString("!Bad ROLL_BI_TRANSLATION\n");
         config_temp.roll_bi_translation = 0.0;
         rtn = -1;
@@ -1497,8 +1625,9 @@ void init_system(void)
     pitch_decCntr = 0;
     roll_decCntr = 0;
     pitch_loopFB = 0;
-    roll_loopFB  = 0;
-       
+    roll_loopFB  = 0;       
+    limit_flags = 0;
+
     PWM_Init(); // PWM Timer Initialization
     Uart0_Init();
     ADC_Init(); // ADC Initialization (internal A/D)
